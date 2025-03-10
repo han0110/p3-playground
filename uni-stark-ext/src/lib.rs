@@ -1,12 +1,13 @@
 //! A minimal univariate STARK framework.
 
-// #![no_std]
+#![no_std]
 
 extern crate alloc;
 
 mod config;
 mod folder;
 mod interaction_air_builder;
+mod keygen;
 mod proof;
 mod prover;
 mod symbolic_builder;
@@ -23,6 +24,7 @@ pub use check_constraints::*;
 pub use config::*;
 pub use folder::*;
 pub use interaction_air_builder::*;
+pub use keygen::*;
 pub use proof::*;
 pub use prover::*;
 pub use symbolic_builder::*;

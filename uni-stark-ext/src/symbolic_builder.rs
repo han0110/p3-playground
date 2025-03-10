@@ -1,6 +1,5 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cmp::max;
 
 use itertools::{Itertools, chain};
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PairBuilder};
@@ -104,44 +103,6 @@ impl<F: Field> SymbolicAirBuilder<F> {
 
 pub(crate) fn max_degree<F>(exprs: &[SymbolicExpression<F>]) -> usize {
     itertools::max(exprs.iter().map(SymbolicExpression::degree_multiple)).unwrap_or(0)
-}
-
-pub(crate) fn interaction_chunks<F>(
-    max_constraint_degree: usize,
-    interactions: &[Interaction<SymbolicExpression<F>>],
-) -> Vec<Vec<usize>> {
-    if interactions.is_empty() {
-        return Vec::new();
-    }
-
-    let interaction_degrees = interactions
-        .iter()
-        .map(|i| (max_degree(&i.fields), i.count.degree_multiple()))
-        .collect_vec();
-
-    let mut chunks = vec![vec![]];
-    let mut current_numer_degree = 0;
-    let mut current_denom_degree = 0;
-    interaction_degrees.into_iter().enumerate().for_each(
-        |(idx, (field_degree, count_degree))| {
-            current_numer_degree = max(
-                current_numer_degree + field_degree,
-                current_denom_degree + count_degree,
-            );
-            current_denom_degree += field_degree;
-            if max(current_numer_degree, current_denom_degree + 1) <= max_constraint_degree {
-                chunks.last_mut().unwrap().push(idx);
-            } else {
-                chunks.push(vec![idx]);
-                current_numer_degree = count_degree;
-                current_denom_degree = field_degree;
-                if max(current_numer_degree, current_denom_degree + 1) > max_constraint_degree {
-                    panic!("Interaction with field_degree={field_degree}, count_degree={count_degree} exceeds max_constraint_degree={max_constraint_degree}")
-                }
-            }
-        },
-    );
-    chunks
 }
 
 impl<F: Field> AirBuilder for SymbolicAirBuilder<F> {

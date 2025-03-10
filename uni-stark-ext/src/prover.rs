@@ -4,7 +4,7 @@ use core::mem;
 use core::ops::Deref;
 
 use itertools::{Itertools, chain, izip};
-use p3_air::Air;
+use p3_air::{Air, BaseAirWithPublicValues};
 use p3_challenger::{CanObserve, CanSample, FieldChallenger};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
@@ -19,7 +19,7 @@ use tracing::{debug_span, info_span, instrument};
 
 use crate::{
     Commitments, Domain, OpenedValues, PackedChallenge, PackedVal, Proof, ProofPerAir,
-    ProverConstraintFolder, ProverInteractionFolder, StarkGenericConfig, SymbolicAirBuilder, Val,
+    ProverConstraintFolder, ProverInteractionFolder, ProvingKey, StarkGenericConfig, Val,
     VerifierInput, eval_log_up,
 };
 
@@ -40,7 +40,7 @@ impl<Val, A> Deref for ProverInput<Val, A> {
 impl<Val: Field, A> ProverInput<Val, A> {
     pub fn new(air: A, public_values: Vec<Val>, trace: RowMajorMatrix<Val>) -> Self
     where
-        A: Air<SymbolicAirBuilder<Val>>,
+        A: BaseAirWithPublicValues<Val>,
     {
         Self {
             inner: VerifierInput::new(air, public_values),
@@ -57,14 +57,13 @@ pub fn prove<
     #[cfg(not(feature = "check-constraints"))] A,
 >(
     config: &SC,
+    pk: &ProvingKey,
     inputs: Vec<ProverInput<Val<SC>, A>>,
     challenger: &mut SC::Challenger,
 ) -> Proof<SC>
 where
     SC: StarkGenericConfig,
-    A: Air<SymbolicAirBuilder<Val<SC>>>
-        + for<'a> Air<ProverInteractionFolder<'a, SC>>
-        + for<'a> Air<ProverConstraintFolder<'a, SC>>,
+    A: for<'a> Air<ProverInteractionFolder<'a, SC>> + for<'a> Air<ProverConstraintFolder<'a, SC>>,
 {
     #[cfg(feature = "check-constraints")]
     crate::check_constraints::check_constraints(&inputs);
@@ -77,14 +76,14 @@ where
         })
         .collect::<(Vec<_>, Vec<_>, Vec<_>)>();
 
-    let has_any_interaction = inputs.iter().any(VerifierInput::has_interaction);
+    let has_any_interaction = pk.has_any_interaction();
 
     let pcs = config.pcs();
-    let (main_domains, quotient_domains) = izip!(&inputs, &log_degrees)
-        .map(|(input, log_degree)| {
+    let (main_domains, quotient_domains) = izip!(pk.per_air(), &log_degrees)
+        .map(|(pk, log_degree)| {
             let main_domain = pcs.natural_domain_for_degree(1 << log_degree);
             let quotient_domain =
-                main_domain.create_disjoint_domain(1 << (log_degree + input.log_quotient_degree));
+                main_domain.create_disjoint_domain(1 << (log_degree + pk.log_quotient_degree));
             (main_domain, quotient_domain)
         })
         .collect::<(Vec<_>, Vec<_>)>();
@@ -107,22 +106,26 @@ where
 
     let beta: SC::Challenge = challenger.sample_algebra_element();
     let gamma: SC::Challenge = challenger.sample_algebra_element();
-    let max_bus_index =
-        itertools::max(inputs.iter().map(|input| input.max_bus_index)).unwrap_or_default();
-    let max_field_count =
-        itertools::max(inputs.iter().map(|input| input.max_field_count)).unwrap_or_default();
-    let beta_powers = beta.powers().skip(1).take(max_field_count).collect_vec();
-    let gamma_powers = gamma.powers().skip(1).take(max_bus_index + 1).collect_vec();
+    let beta_powers = beta
+        .powers()
+        .skip(1)
+        .take(pk.max_field_count())
+        .collect_vec();
+    let gamma_powers = gamma
+        .powers()
+        .skip(1)
+        .take(pk.max_bus_index() + 1)
+        .collect_vec();
 
-    let (log_up_sums, log_up_traces) = izip!(&inputs, main_traces)
-        .map(|(input, main_trace)| {
-            (input.has_interaction())
+    let (log_up_sums, log_up_traces) = izip!(pk.per_air(), &inputs, main_traces)
+        .map(|(pk, input, main_trace)| {
+            (pk.has_interaction())
                 .then(|| {
                     log_up_trace(
+                        pk.interaction_count,
+                        &pk.interaction_chunks,
                         &input.air,
                         &input.public_values,
-                        input.interaction_count,
-                        &input.interaction_chunks,
                         main_trace.as_view(),
                         &beta_powers,
                         &gamma_powers,
@@ -163,45 +166,51 @@ where
 
     let alpha: SC::Challenge = challenger.sample_algebra_element();
 
-    let max_constraint_count =
-        itertools::max(inputs.iter().map(|input| input.constraint_count)).unwrap_or_default();
+    let max_constraint_count = pk.max_constraint_count();
     let mut alpha_powers = alpha.powers().take(max_constraint_count).collect_vec();
     alpha_powers.reverse();
     let beta_powers = beta_powers.into_iter().map_into().collect_vec();
     let gamma_powers = gamma_powers.into_iter().map_into().collect_vec();
 
-    let quotient_values = izip!(&inputs, &main_domains, &quotient_domains, &log_up_sums)
-        .enumerate()
-        .map(|(idx, (input, main_domain, quotient_domain, log_up_sum))| {
+    let quotient_values = izip!(
+        pk.per_air(),
+        &inputs,
+        &main_domains,
+        &quotient_domains,
+        &log_up_sums
+    )
+    .enumerate()
+    .map(
+        |(idx, (pk, input, main_domain, quotient_domain, log_up_sum))| {
             let main_trace_on_quotient_domain =
                 pcs.get_evaluations_on_domain(&main_data, idx, *quotient_domain);
             let log_up_trace_on_quotient_domain = log_up_data.as_ref().and_then(|log_up_data| {
-                (input.has_interaction())
+                (pk.has_interaction())
                     .then(|| pcs.get_evaluations_on_domain(log_up_data, idx, *quotient_domain))
             });
             quotient_values(
+                pk.interaction_count,
+                &pk.interaction_chunks,
                 &input.air,
                 &input.public_values,
-                input.interaction_count,
-                &input.interaction_chunks,
                 *main_domain,
                 *quotient_domain,
                 main_trace_on_quotient_domain,
                 log_up_trace_on_quotient_domain,
-                &alpha_powers[max_constraint_count - input.constraint_count..],
+                &alpha_powers[max_constraint_count - pk.constraint_count..],
                 &beta_powers,
                 &gamma_powers,
                 log_up_sum.unwrap_or_default().into(),
             )
-        })
-        .collect::<Vec<_>>();
+        },
+    )
+    .collect::<Vec<_>>();
 
-    let quotient_chunks = izip!(&inputs, &quotient_domains, quotient_values)
-        .flat_map(|(input, quotient_domain, quotient_values)| {
+    let quotient_chunks = izip!(pk.per_air(), &quotient_domains, quotient_values)
+        .flat_map(|(pk, quotient_domain, quotient_values)| {
             let quotient_flat = RowMajorMatrix::new_col(quotient_values).flatten_to_base();
-            let quotient_chunks =
-                quotient_domain.split_evals(input.quotient_degree(), quotient_flat);
-            let qc_domains = quotient_domain.split_domains(input.quotient_degree());
+            let quotient_chunks = quotient_domain.split_evals(pk.quotient_degree(), quotient_flat);
+            let qc_domains = quotient_domain.split_domains(pk.quotient_degree());
             izip!(qc_domains, quotient_chunks)
         })
         .collect();
@@ -234,8 +243,8 @@ where
                 )),
                 log_up_data.as_ref().map(|log_up_data| (
                     log_up_data,
-                    izip!(&inputs, &log_degrees)
-                        .filter(|(input, _)| input.has_interaction())
+                    izip!(pk.per_air(), &log_degrees)
+                        .filter(|(pk, _)| pk.has_interaction())
                         .map(|(_, log_degree)| {
                             let main_domain = pcs.natural_domain_for_degree(1 << log_degree);
                             let zeta_next = main_domain.next_point(zeta).unwrap();
@@ -246,7 +255,7 @@ where
                 Some((
                     &quotient_data,
                     // open every chunk at zeta
-                    vec![vec![zeta]; inputs.iter().map(VerifierInput::quotient_degree).sum()],
+                    vec![vec![zeta]; pk.per_air().iter().map(|pk| pk.quotient_degree()).sum()],
                 )),
             ]
             .collect(),
@@ -257,8 +266,8 @@ where
     let main = opened_values.next().unwrap();
     let mut log_up_chunks = has_any_interaction.then(|| opened_values.next().unwrap().into_iter());
     let mut quotient_chunks = opened_values.next().unwrap().into_iter();
-    let per_air = izip!(&inputs, log_degrees, log_up_sums, main)
-        .map(|(input, log_degree, log_up_sum, main)| {
+    let per_air = izip!(pk.per_air(), log_degrees, log_up_sums, main)
+        .map(|(pk, log_degree, log_up_sum, main)| {
             let (main_local, main_next) = {
                 let mut main = main.into_iter();
                 (main.next().unwrap(), main.next().unwrap())
@@ -266,7 +275,7 @@ where
             let (log_up_local, log_up_next) = log_up_chunks
                 .as_mut()
                 .and_then(|values| {
-                    input.has_interaction().then(|| {
+                    pk.has_interaction().then(|| {
                         let mut values = values.next().unwrap().into_iter();
                         (values.next().unwrap(), values.next().unwrap())
                     })
@@ -275,7 +284,7 @@ where
             let quotient_chunks = quotient_chunks
                 .by_ref()
                 .map(|mut values| values.pop().unwrap())
-                .take(input.quotient_degree())
+                .take(pk.quotient_degree())
                 .collect_vec();
             let opened_values = OpenedValues {
                 main_local,
@@ -301,10 +310,10 @@ where
 
 #[instrument(name = "compute log up trace", skip_all)]
 fn log_up_trace<SC, A>(
-    air: &A,
-    public_values: &Vec<Val<SC>>,
     interaction_count: usize,
     interaction_chunks: &[Vec<usize>],
+    air: &A,
+    public_values: &Vec<Val<SC>>,
     main_trace: RowMajorMatrixView<Val<SC>>,
     beta_powers: &[SC::Challenge],
     gamma_powers: &[SC::Challenge],
@@ -389,10 +398,10 @@ where
 #[instrument(name = "compute quotient polynomial", skip_all)]
 #[allow(clippy::too_many_arguments)]
 fn quotient_values<SC, A, Mat>(
-    air: &A,
-    public_values: &Vec<Val<SC>>,
     interaction_count: usize,
     interaction_chunks: &[Vec<usize>],
+    air: &A,
+    public_values: &Vec<Val<SC>>,
     main_domain: Domain<SC>,
     quotient_domain: Domain<SC>,
     main_trace_on_quotient_domain: Mat,
@@ -476,11 +485,11 @@ where
                 });
                 eval_log_up(
                     &mut folder,
+                    interaction_chunks,
                     &numers,
                     &denoms,
                     &log_up_local,
                     &log_up_next,
-                    interaction_chunks,
                     log_up_sum,
                 );
             }

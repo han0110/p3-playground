@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use p3_air::{Air, BaseAir};
+use p3_air::{Air, BaseAir, BaseAirWithPublicValues};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
@@ -12,7 +12,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark_ext::{
-    InteractionAirBuilder, ProverInput, StarkConfig, VerifierInput, prove, verify,
+    InteractionAirBuilder, ProverInput, StarkConfig, VerifierInput, keygen, prove, verify,
 };
 use rand::{Rng, rng};
 
@@ -65,6 +65,12 @@ impl<F> BaseAir<F> for MyAir {
             Self::Sending(inner) => BaseAir::<F>::width(inner),
             Self::Receiving(inner) => BaseAir::<F>::width(inner),
         }
+    }
+}
+
+impl<F> BaseAirWithPublicValues<F> for MyAir {
+    fn num_public_values(&self) -> usize {
+        0
     }
 }
 
@@ -123,9 +129,15 @@ fn do_test(sending_trace: RowMajorMatrix<Val>, receiving_trace: RowMajorMatrix<V
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
     let config = MyConfig::new(pcs);
 
+    let (vk, pk) = keygen::<Val, _>(
+        3,
+        &[MyAir::Sending(SendingAir), MyAir::Receiving(ReceivingAir)],
+    );
+
     let mut challenger = Challenger::new(perm.clone());
     let proof = prove(
         &config,
+        &pk,
         vec![
             ProverInput::new(MyAir::Sending(SendingAir), Vec::new(), sending_trace),
             ProverInput::new(MyAir::Receiving(ReceivingAir), Vec::new(), receiving_trace),
@@ -135,6 +147,7 @@ fn do_test(sending_trace: RowMajorMatrix<Val>, receiving_trace: RowMajorMatrix<V
     let mut challenger = Challenger::new(perm);
     verify(
         &config,
+        &vk,
         vec![
             VerifierInput::new(MyAir::Sending(SendingAir), Vec::new()),
             VerifierInput::new(MyAir::Receiving(ReceivingAir), Vec::new()),

@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, BaseAirWithPublicValues};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::{DuplexChallenger, HashChallenger, SerializingChallenger32};
 use p3_circle::CirclePcs;
@@ -21,7 +21,7 @@ use p3_symmetric::{
     CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher32, TruncatedPermutation,
 };
 use p3_uni_stark_ext::{
-    ProverInput, StarkConfig, StarkGenericConfig, Val, VerifierInput, prove, verify,
+    ProverInput, StarkConfig, StarkGenericConfig, Val, VerifierInput, keygen, prove, verify,
 };
 use rand::distr::{Distribution, StandardUniform};
 use rand::{Rng, rng};
@@ -90,6 +90,12 @@ impl<F> BaseAir<F> for MulAir {
     }
 }
 
+impl<F> BaseAirWithPublicValues<F> for MulAir {
+    fn num_public_values(&self) -> usize {
+        0
+    }
+}
+
 impl<AB: AirBuilder> Air<AB> for MulAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -125,11 +131,14 @@ where
     SC::Challenger: Clone,
     StandardUniform: Distribution<Val<SC>>,
 {
+    let (vk, pk) = keygen::<Val<SC>, _>(air.degree.max(3) as _, &[air]);
+
     let trace = air.random_valid_trace(log_height, true);
 
     let mut p_challenger = challenger.clone();
     let proof = prove(
         &config,
+        &pk,
         vec![ProverInput::new(air, vec![], trace)],
         &mut p_challenger,
     );
@@ -143,6 +152,7 @@ where
     let mut v_challenger = challenger;
     verify(
         &config,
+        &vk,
         vec![VerifierInput::new(air, vec![])],
         &mut v_challenger,
         &deserialized_proof,

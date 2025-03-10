@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, BaseAirWithPublicValues};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
@@ -12,7 +12,7 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark_ext::{ProverInput, StarkConfig, VerifierInput, prove, verify};
+use p3_uni_stark_ext::{ProverInput, StarkConfig, VerifierInput, keygen, prove, verify};
 use rand::rng;
 
 /// For testing the public values feature
@@ -21,6 +21,12 @@ pub struct FibonacciAir {}
 impl<F> BaseAir<F> for FibonacciAir {
     fn width(&self) -> usize {
         NUM_FIBONACCI_COLS
+    }
+}
+
+impl<F> BaseAirWithPublicValues<F> for FibonacciAir {
+    fn num_public_values(&self) -> usize {
+        3
     }
 }
 
@@ -119,20 +125,23 @@ fn test_public_value_impl(n: usize, x: u64) {
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let trace = generate_trace_rows::<Val>(0, 1, n);
     let fri_config = create_test_fri_config(challenge_mmcs);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
     let config = MyConfig::new(pcs);
-    let mut challenger = Challenger::new(perm.clone());
+    let (vk, pk) = keygen::<Val, _>(3, &[FibonacciAir {}]);
+    let trace = generate_trace_rows::<Val>(0, 1, n);
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
+    let mut challenger = Challenger::new(perm.clone());
     let proof = prove(
         &config,
+        &pk,
         vec![ProverInput::new(FibonacciAir {}, pis.clone(), trace)],
         &mut challenger,
     );
     let mut challenger = Challenger::new(perm);
     verify(
         &config,
+        &vk,
         vec![VerifierInput::new(FibonacciAir {}, pis)],
         &mut challenger,
         &proof,
@@ -161,17 +170,19 @@ fn test_incorrect_public_value() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_config = create_test_fri_config(challenge_mmcs);
-    let trace = generate_trace_rows::<Val>(0, 1, 1 << 3);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
     let config = MyConfig::new(pcs);
-    let mut challenger = Challenger::new(perm);
+    let (_, pk) = keygen::<Val, _>(3, &[FibonacciAir {}]);
+    let trace = generate_trace_rows::<Val>(0, 1, 1 << 3);
     let pis = vec![
         BabyBear::ZERO,
         BabyBear::ONE,
         BabyBear::from_u32(123_123), // incorrect result
     ];
+    let mut challenger = Challenger::new(perm);
     prove(
         &config,
+        &pk,
         vec![ProverInput::new(FibonacciAir {}, pis.clone(), trace)],
         &mut challenger,
     );

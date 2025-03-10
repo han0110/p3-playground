@@ -135,11 +135,11 @@ impl<SC: StarkGenericConfig> InteractionAirBuilder for ProverInteractionFolder<'
 #[inline]
 pub(crate) fn eval_log_up<AB: ExtensionBuilder>(
     builder: &mut AB,
+    interaction_chunks: &[Vec<usize>],
     numers: &[AB::Expr],
     denoms: &[AB::ExprEF],
     local: &[AB::VarEF],
     next: &[AB::VarEF],
-    interaction_chunks: &[Vec<usize>],
     sum: AB::ExprEF,
 ) {
     let chunk_local = &local[..interaction_chunks.len()];

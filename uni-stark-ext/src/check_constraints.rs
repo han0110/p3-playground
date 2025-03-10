@@ -41,14 +41,14 @@ where
                     air_index,
                     row_index: i,
                     main,
-                    public_values: &input.public_values,
+                    public_values: &input.inner.public_values,
                     is_first_row: F::from_bool(i == 0),
                     is_last_row: F::from_bool(i == height - 1),
                     is_transition: F::from_bool(i != height - 1),
                     interactions: &mut interactions,
                 };
 
-                input.air.eval(&mut builder);
+                input.inner.air.eval(&mut builder);
             });
         });
 
