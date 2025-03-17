@@ -117,23 +117,25 @@ where
         .take(pk.max_bus_index() + 1)
         .collect_vec();
 
-    let (log_up_sums, log_up_traces) = izip!(pk.per_air(), &inputs, main_traces)
-        .map(|(pk, input, main_trace)| {
-            (pk.has_interaction())
-                .then(|| {
-                    log_up_trace(
-                        pk.interaction_count,
-                        &pk.interaction_chunks,
-                        &input.air,
-                        &input.public_values,
-                        main_trace.as_view(),
-                        &beta_powers,
-                        &gamma_powers,
-                    )
-                })
-                .unzip()
-        })
-        .collect::<(Vec<_>, Vec<_>)>();
+    let (log_up_sums, log_up_traces) = info_span!("compute log up traces").in_scope(|| {
+        izip!(pk.per_air(), &inputs, main_traces)
+            .map(|(pk, input, main_trace)| {
+                pk.has_interaction()
+                    .then(|| {
+                        log_up_trace(
+                            pk.interaction_count,
+                            &pk.interaction_chunks,
+                            &input.air,
+                            &input.public_values,
+                            main_trace.as_view(),
+                            &beta_powers,
+                            &gamma_powers,
+                        )
+                    })
+                    .unzip()
+            })
+            .collect::<(Vec<_>, Vec<_>)>()
+    });
 
     #[cfg(feature = "check-constraints")]
     assert_eq!(
@@ -172,39 +174,43 @@ where
     let beta_powers = beta_powers.into_iter().map_into().collect_vec();
     let gamma_powers = gamma_powers.into_iter().map_into().collect_vec();
 
-    let quotient_values = izip!(
-        pk.per_air(),
-        &inputs,
-        &main_domains,
-        &quotient_domains,
-        &log_up_sums
-    )
-    .enumerate()
-    .map(
-        |(idx, (pk, input, main_domain, quotient_domain, log_up_sum))| {
-            let main_trace_on_quotient_domain =
-                pcs.get_evaluations_on_domain(&main_data, idx, *quotient_domain);
-            let log_up_trace_on_quotient_domain = log_up_data.as_ref().and_then(|log_up_data| {
-                (pk.has_interaction())
-                    .then(|| pcs.get_evaluations_on_domain(log_up_data, idx, *quotient_domain))
-            });
-            quotient_values(
-                pk.interaction_count,
-                &pk.interaction_chunks,
-                &input.air,
-                &input.public_values,
-                *main_domain,
-                *quotient_domain,
-                main_trace_on_quotient_domain,
-                log_up_trace_on_quotient_domain,
-                &alpha_powers[max_constraint_count - pk.constraint_count..],
-                &beta_powers,
-                &gamma_powers,
-                log_up_sum.unwrap_or_default().into(),
-            )
-        },
-    )
-    .collect::<Vec<_>>();
+    let quotient_values = info_span!("compute quotient polynomials").in_scope(|| {
+        izip!(
+            pk.per_air(),
+            &inputs,
+            &main_domains,
+            &quotient_domains,
+            &log_up_sums
+        )
+        .enumerate()
+        .map(
+            |(idx, (pk, input, main_domain, quotient_domain, log_up_sum))| {
+                let main_trace_on_quotient_domain =
+                    pcs.get_evaluations_on_domain(&main_data, idx, *quotient_domain);
+                let log_up_trace_on_quotient_domain =
+                    log_up_data.as_ref().and_then(|log_up_data| {
+                        pk.has_interaction().then(|| {
+                            pcs.get_evaluations_on_domain(log_up_data, idx, *quotient_domain)
+                        })
+                    });
+                quotient_values(
+                    pk.interaction_count,
+                    &pk.interaction_chunks,
+                    &input.air,
+                    &input.public_values,
+                    *main_domain,
+                    *quotient_domain,
+                    main_trace_on_quotient_domain,
+                    log_up_trace_on_quotient_domain,
+                    &alpha_powers[max_constraint_count - pk.constraint_count..],
+                    &beta_powers,
+                    &gamma_powers,
+                    log_up_sum.unwrap_or_default().into(),
+                )
+            },
+        )
+        .collect::<Vec<_>>()
+    });
 
     let quotient_chunks = izip!(pk.per_air(), &quotient_domains, quotient_values)
         .flat_map(|(pk, quotient_domain, quotient_values)| {
