@@ -29,7 +29,11 @@ type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
 type Challenger = DuplexChallenger<Val, Perm, 16, 8>;
 type MyFriConfig = FriConfig<ChallengeMmcs>;
 
-fn get_ldt_for_testing<R: Rng>(rng: &mut R, log_final_poly_len: usize) -> (Perm, MyFriConfig) {
+fn get_ldt_for_testing<R: Rng>(
+    rng: &mut R,
+    log_final_poly_len: usize,
+    arity_bits: usize,
+) -> (Perm, MyFriConfig) {
     let perm = Perm::new_from_rng_128(rng);
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
@@ -39,13 +43,14 @@ fn get_ldt_for_testing<R: Rng>(rng: &mut R, log_final_poly_len: usize) -> (Perm,
         log_final_poly_len,
         num_queries: 10,
         proof_of_work_bits: 8,
+        arity_bits,
         mmcs,
     };
     (perm, fri_config)
 }
 
-fn do_test_fri_ldt<R: Rng>(rng: &mut R, log_final_poly_len: usize) {
-    let (perm, fc) = get_ldt_for_testing(rng, log_final_poly_len);
+fn do_test_fri_ldt<R: Rng>(rng: &mut R, log_final_poly_len: usize, arity_bits: usize) {
+    let (perm, fc) = get_ldt_for_testing(rng, log_final_poly_len, arity_bits);
     let dft = Radix2Dit::default();
 
     let shift = Val::GENERATOR;
@@ -131,8 +136,10 @@ fn do_test_fri_ldt<R: Rng>(rng: &mut R, log_final_poly_len: usize) {
 fn test_fri_ldt() {
     // FRI is kind of flaky depending on indexing luck
     for i in 0..4 {
-        let mut rng = StdRng::seed_from_u64(i as u64);
-        do_test_fri_ldt(&mut rng, i + 1);
+        for arity_bits in 1..3 {
+            let mut rng = StdRng::seed_from_u64((i + 4 * arity_bits) as u64);
+            do_test_fri_ldt(&mut rng, i + 1, arity_bits);
+        }
     }
 }
 
@@ -143,6 +150,6 @@ fn test_fri_ldt_should_panic() {
     // FRI is kind of flaky depending on indexing luck
     for i in 0..4 {
         let mut rng = StdRng::seed_from_u64(i);
-        do_test_fri_ldt(&mut rng, 5);
+        do_test_fri_ldt(&mut rng, 5, 1);
     }
 }

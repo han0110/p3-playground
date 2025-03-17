@@ -411,8 +411,7 @@ where
         // Batch combination challenge
         let alpha: Challenge = challenger.sample_algebra_element();
 
-        let log_global_max_height =
-            proof.commit_phase_commits.len() + self.fri.log_blowup + self.fri.log_final_poly_len;
+        let log_global_max_height = proof.log_max_height;
 
         let g: TwoAdicFriGenericConfigForMmcs<Val, InputMmcs> =
             TwoAdicFriGenericConfig(PhantomData);
