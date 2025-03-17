@@ -1,5 +1,5 @@
 [workspace]
-members = ["uni-stark-ext"]
+members = ["fri-ext", "uni-stark-ext"]
 resolver = "2"
 
 [workspace.package]
