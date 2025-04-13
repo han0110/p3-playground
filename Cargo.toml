@@ -1,5 +1,5 @@
 [workspace]
-members = ["fri-ext", "uni-stark-ext"]
+members = ["fri-ext", "uni-stark-ext", "uni-whir"]
 resolver = "2"
 
 [workspace.package]
@@ -46,3 +46,5 @@ p3-sha256 = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
 p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
+
+whir-p3 = { git = "http://github.com/tcoratger/whir-p3" }
