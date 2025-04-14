@@ -125,7 +125,7 @@ fn test_public_value_impl(n: usize, x: u64) {
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_config = create_test_fri_config(challenge_mmcs);
+    let fri_config = create_test_fri_config(challenge_mmcs, 0);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
     let config = MyConfig::new(pcs);
     let (vk, pk) = keygen::<Val, _>(3, &[FibonacciAir {}]);
@@ -169,7 +169,7 @@ fn test_incorrect_public_value() {
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_config = create_test_fri_config(challenge_mmcs);
+    let fri_config = create_test_fri_config(challenge_mmcs, 0);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
     let config = MyConfig::new(pcs);
     let (_, pk) = keygen::<Val, _>(3, &[FibonacciAir {}]);

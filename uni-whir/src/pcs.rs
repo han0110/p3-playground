@@ -9,10 +9,9 @@ use core::ops::{Deref, Range};
 
 use itertools::{Itertools, chain, cloned, enumerate, izip, rev};
 use p3_challenger::FieldChallenger;
-use p3_commit::{
-    ExtensionMmcs, Mmcs, OpenedValues, Pcs, PolynomialSpace, TwoAdicMultiplicativeCoset,
-};
+use p3_commit::{ExtensionMmcs, Mmcs, OpenedValues, Pcs};
 use p3_dft::TwoAdicSubgroupDft;
+use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PrimeField64, TwoAdicField, scale_slice_in_place};
 use p3_matrix::dense::{DenseMatrix, DenseStorage, RowMajorMatrix, RowMajorMatrixView};
 use p3_matrix::extension::FlatMatrixView;
@@ -26,13 +25,12 @@ use serde::{Deserialize, Serialize};
 use whir_p3::fiat_shamir::domain_separator::DomainSeparator;
 use whir_p3::fiat_shamir::errors::ProofError;
 use whir_p3::fiat_shamir::pow::blake3::Blake3PoW;
-use whir_p3::parameters::{MultivariateParameters, WhirParameters};
+use whir_p3::parameters::{MultivariateParameters, ProtocolParameters};
 use whir_p3::poly::coeffs::CoefficientList;
 use whir_p3::poly::evals::EvaluationsList;
 use whir_p3::poly::multilinear::MultilinearPoint;
 use whir_p3::whir::committer::Witness;
 use whir_p3::whir::committer::reader::ParsedCommitment;
-use whir_p3::whir::domainsep::WhirDomainSeparator;
 use whir_p3::whir::parameters::WhirConfig;
 use whir_p3::whir::prover::Prover;
 use whir_p3::whir::statement::{Statement, StatementVerifier, Weights};
@@ -41,14 +39,14 @@ use whir_p3::whir::verifier::Verifier;
 #[derive(Debug)]
 pub struct UniWhirPcs<Val, Dft, Hash, Compression, const DIGEST_ELEMS: usize> {
     dft: Dft,
-    whir: WhirParameters<Hash, Compression>,
+    whir: ProtocolParameters<Hash, Compression>,
     _phantom: PhantomData<Val>,
 }
 
 impl<Val, Dft, Hash, Compression, const DIGEST_ELEMS: usize>
     UniWhirPcs<Val, Dft, Hash, Compression, DIGEST_ELEMS>
 {
-    pub const fn new(dft: Dft, whir: WhirParameters<Hash, Compression>) -> Self {
+    pub const fn new(dft: Dft, whir: ProtocolParameters<Hash, Compression>) -> Self {
         Self {
             dft,
             whir,
@@ -84,6 +82,7 @@ where
         <MerkleTreeMmcs<Val, u8, Hash, Compression, DIGEST_ELEMS> as Mmcs<Val>>::Commitment;
     type ProverData = (
         ConcatMats<Val>,
+        // TODO(whir-p3): Use reference to merkle tree in `Witness` to avoid cloning or ownership taking.
         RefCell<
             Option<
                 <MerkleTreeMmcs<Val, u8, Hash, Compression, DIGEST_ELEMS> as Mmcs<Val>>::ProverData<
@@ -97,24 +96,22 @@ where
     type Error = ProofError;
 
     fn natural_domain_for_degree(&self, degree: usize) -> Self::Domain {
-        let log_n = log2_strict_usize(degree);
-        TwoAdicMultiplicativeCoset {
-            log_n,
-            shift: Val::ONE,
-        }
+        let log_size = log2_strict_usize(degree);
+        TwoAdicMultiplicativeCoset::new(Val::ONE, log_size).unwrap()
     }
 
     fn commit(
         &self,
         evaluations: Vec<(Self::Domain, RowMajorMatrix<Val>)>,
     ) -> (Self::Commitment, Self::ProverData) {
+        // Transform evaluations into univariate monomial form.
         let coeffs = evaluations
             .into_iter()
             .map(|(domain, evals)| {
                 assert_eq!(domain.size(), evals.height());
                 let mut coeffs = self.dft.idft_batch(evals);
-                if domain.shift != Val::ONE {
-                    let shift_inv = domain.shift.inverse();
+                if domain.shift() != Val::ONE {
+                    let shift_inv = domain.shift().inverse();
                     let powers = shift_inv.powers().take(coeffs.height()).collect_vec();
                     coeffs
                         .par_rows_mut()
@@ -124,9 +121,14 @@ where
                 coeffs
             })
             .collect_vec();
+
+        // Concat matrices into single polynomial.
         let concat_mats = ConcatMats::new(coeffs);
+
+        // This should generate the same codeword and commitment as in `whir_p3`.
         let (commitment, merkle_tree) = {
             let width = 1 << self.whir.folding_factor.at_round(0);
+            // TODO(whir-p3): Commit to evaluation form directly and fold by `eq([lo, hi], r)`.
             let mut coeffs = evals_to_coeffs(concat_mats.values.clone());
             coeffs.resize(coeffs.len() << self.whir.starting_log_inv_rate, Val::ZERO);
             let folded_coeffs = RowMajorMatrix::new(coeffs, width);
@@ -146,6 +148,7 @@ where
             ));
             mmcs.commit(vec![folded_codeword])
         };
+
         (commitment, (concat_mats, RefCell::new(Some(merkle_tree))))
     }
 
@@ -155,17 +158,18 @@ where
         idx: usize,
         domain: Self::Domain,
     ) -> Self::EvaluationsOnDomain<'a> {
+        // Compute LDE on the fly.
         let coeffs = {
             let mat = concat_mats.mat(idx);
             let mut coeffs =
-                RowMajorMatrix::new(Val::zero_vec(mat.width() << domain.log_n), mat.width());
+                RowMajorMatrix::new(Val::zero_vec(mat.width() << domain.log_size()), mat.width());
             coeffs
                 .par_rows_mut()
                 .zip(mat.par_row_slices())
                 .for_each(|(dst, src)| dst.copy_from_slice(src));
             coeffs
         };
-        self.dft.coset_dft_batch(coeffs, domain.shift)
+        self.dft.coset_dft_batch(coeffs, domain.shift())
     }
 
     fn open(
@@ -223,6 +227,7 @@ where
                 .take(config.committment_ood_samples)
                 .collect::<(Vec<_>, Vec<_>)>();
 
+                // Challenge for random linear combining columns.
                 let r = repeat_with(|| challenger.sample_algebra_element::<Challenge>())
                     .take(concat_mats.meta.max_log_width())
                     .collect_vec();
@@ -253,9 +258,9 @@ where
                     ood_points,
                     ood_answers: ood_answers.clone(),
                 };
-                let mut prover_state = DomainSeparator::new("🌪️")
-                    .add_whir_proof(&config)
-                    .to_prover_state();
+                let mut domainsep = DomainSeparator::new("🌪️");
+                domainsep.add_whir_proof(&config);
+                let mut prover_state = domainsep.to_prover_state();
                 let proof = Prover(config.clone())
                     .prove(&mut prover_state, statement, witness)
                     .unwrap();
@@ -305,7 +310,7 @@ where
                 mats.iter()
                     .map(|(domain, evals)| Dimensions {
                         width: evals[0].1.len(),
-                        height: 1 << domain.log_n,
+                        height: domain.size(),
                     })
                     .collect(),
             );
@@ -331,9 +336,9 @@ where
                 })
             });
 
-            let mut verifier_state = DomainSeparator::new("🌪️")
-                .add_whir_proof(&config)
-                .to_verifier_state(&proof.narg_string);
+            let mut domainsep = DomainSeparator::new("🌪️");
+            domainsep.add_whir_proof(&config);
+            let mut verifier_state = domainsep.to_verifier_state(&proof.narg_string);
             Verifier::new(&config).verify(
                 &mut verifier_state,
                 &ParsedCommitment {
@@ -361,15 +366,19 @@ impl ConcatMatsMeta {
         let (dimensions, ranges) = dims
             .iter()
             .enumerate()
+            // Sorted by matrix size in descending order.
             .sorted_by_key(|(_, dim)| Reverse(dim.width * dim.height))
+            // Calculate sub-cube range for each matrix (power-of-2 aligned).
             .scan(0, |offset, (idx, dim)| {
                 let size = dim.width.next_power_of_two() * dim.height;
                 let offset = mem::replace(offset, *offset + size);
                 Some((idx, dim, offset..offset + size))
             })
+            // Store the dimension and range in original order.
             .sorted_by_key(|(idx, _, _)| *idx)
             .map(|(_, dim, range)| (dim, range))
             .collect::<(Vec<_>, Vec<_>)>();
+        // Calculate number of variable of concated polynomial.
         let num_vars = log2_ceil_usize(
             ranges
                 .iter()
@@ -413,6 +422,7 @@ impl ConcatMatsMeta {
             x,
             log_height,
         );
+
         let eval = EvaluationsList::new(
             chain![cloned(ys), repeat(Challenge::ZERO)]
                 .take(1 << log_width)
@@ -420,6 +430,7 @@ impl ConcatMatsMeta {
         )
         .evaluate(&MultilinearPoint(rev(&r[..log_width]).copied().collect()));
 
+        // TODO(whir-p3): Introduce a new weight variant to generate such evaluations.
         (Weights::linear(EvaluationsList::new(weight)), eval)
     }
 }
@@ -434,6 +445,7 @@ impl<Val: Field> ConcatMats<Val> {
         let meta = ConcatMatsMeta::new(mats.iter().map(Matrix::dimensions).collect());
         let mut values = Val::zero_vec(1 << meta.num_vars);
         izip!(&meta.ranges, mats).for_each(|(range, mat)| {
+            // Copy and pad each row into power-of-2 length into concated polynomial.
             values[range.clone()]
                 .par_chunks_mut(mat.width().next_power_of_two())
                 .zip(mat.par_row_slices())
@@ -483,18 +495,19 @@ impl<T, R: Deref<Target = [T]>> Deref for RstripedMatrixRowSlice<R> {
     }
 }
 
+/// Rightmost rows striped matrix view.
 pub struct RstripedMatrixView<T, M> {
     inner: M,
-    width: usize,
+    mid: usize,
     _marker: PhantomData<T>,
 }
 
 impl<T, M> RstripedMatrixView<T, M> {
     #[inline]
-    pub const fn new(inner: M, width: usize) -> Self {
+    pub const fn new(inner: M, mid: usize) -> Self {
         Self {
             inner,
-            width,
+            mid,
             _marker: PhantomData,
         }
     }
@@ -509,7 +522,7 @@ impl<T: Clone + Send + Sync, S: DenseStorage<T>> RstripedMatrixView<T, DenseMatr
             .values
             .borrow()
             .par_chunks_exact(self.inner.width)
-            .map(|chunk| &chunk[..self.width])
+            .map(|chunk| &chunk[..self.mid])
     }
 }
 
@@ -521,17 +534,17 @@ impl<M: Matrix<T>, T: Send + Sync> Matrix<T> for RstripedMatrixView<T, M> {
 
     #[inline]
     fn row(&self, r: usize) -> Self::Row<'_> {
-        self.inner.row(r).take(self.width)
+        self.inner.row(r).take(self.mid)
     }
 
     #[inline]
     fn row_slice(&self, r: usize) -> impl Deref<Target = [T]> {
-        RstripedMatrixRowSlice::new(self.inner.row_slice(r), self.width)
+        RstripedMatrixRowSlice::new(self.inner.row_slice(r), self.mid)
     }
 
     #[inline]
     fn width(&self) -> usize {
-        self.width
+        self.mid
     }
 
     #[inline]
@@ -540,6 +553,7 @@ impl<M: Matrix<T>, T: Send + Sync> Matrix<T> for RstripedMatrixView<T, M> {
     }
 }
 
+/// Expand sub-cube of `evals` by `r` in place as `evals[..evals.len() >> r.len()] ⊗ eq(r)`
 fn expand_eq<Challenge: Field>(evals: &mut [Challenge], r: &[Challenge]) {
     let size = evals.len() >> r.len();
     enumerate(r).for_each(|(i, r_i)| {
@@ -551,6 +565,7 @@ fn expand_eq<Challenge: Field>(evals: &mut [Challenge], r: &[Challenge]) {
     });
 }
 
+/// Expand sub-cube of `evals` by `pow(x, n)` in place as `evals[..evals.len() >> n] ⊗ pow(x, n)`
 fn expand_pow<Challenge: Field>(evals: &mut [Challenge], x: Challenge, n: usize) {
     let size = evals.len() >> n;
     let mut x_sqr = x;
@@ -561,6 +576,7 @@ fn expand_pow<Challenge: Field>(evals: &mut [Challenge], x: Challenge, n: usize)
     });
 }
 
+/// Inverse operation of `wavelet_transform`.
 fn evals_to_coeffs<F: Field>(mut evals: Vec<F>) -> Vec<F> {
     (0..log2_strict_usize(evals.len())).for_each(|i| {
         evals.par_chunks_mut(2 << i).for_each(|chunk| {
