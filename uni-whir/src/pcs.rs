@@ -1,11 +1,11 @@
+use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::cmp::Reverse;
-use core::iter::{repeat, repeat_with};
+use core::iter::{Take, repeat, repeat_with};
 use core::marker::PhantomData;
 use core::mem;
-use core::ops::Range;
-use std::iter::Take;
-use std::ops::Deref;
+use core::ops::{Deref, Range};
 
 use itertools::{Itertools, chain, cloned, enumerate, izip, rev};
 use p3_challenger::FieldChallenger;
@@ -115,7 +115,6 @@ where
                 let mut coeffs = self.dft.idft_batch(evals);
                 if domain.shift != Val::ONE {
                     let shift_inv = domain.shift.inverse();
-                    // TODO: Cache `powers` of `shift_inv`.
                     let powers = shift_inv.powers().take(coeffs.height()).collect_vec();
                     coeffs
                         .par_rows_mut()
@@ -128,18 +127,15 @@ where
         let concat_mats = ConcatMats::new(coeffs);
         let (commitment, merkle_tree) = {
             let width = 1 << self.whir.folding_factor.at_round(0);
-            let mut folded_coeffs = RowMajorMatrix::new(
-                Val::zero_vec(concat_mats.values.len() << self.whir.starting_log_inv_rate),
-                width,
-            );
-            folded_coeffs.values[..concat_mats.values.len()]
-                .copy_from_slice(&evals_to_coeffs(concat_mats.values.clone()));
+            let mut coeffs = evals_to_coeffs(concat_mats.values.clone());
+            coeffs.resize(coeffs.len() << self.whir.starting_log_inv_rate, Val::ZERO);
+            let folded_coeffs = RowMajorMatrix::new(coeffs, width);
             let folded_codeword = self.dft.dft_batch(folded_coeffs).to_row_major_matrix();
             // TODO(whir-p3): Commit to base elements
             let folded_codeword = RowMajorMatrix::new(
                 folded_codeword
                     .values
-                    .into_iter()
+                    .into_par_iter()
                     .map(Challenge::from)
                     .collect(),
                 width,
@@ -213,19 +209,15 @@ where
                     MultivariateParameters::new(concat_mats.meta.num_vars),
                     self.whir.clone(),
                 );
-                let polynomial = CoefficientList::new(
-                    evals_to_coeffs(concat_mats.values.clone())
-                        .into_iter()
-                        .map(Challenge::from)
-                        .collect(),
-                );
+                let polynomial = CoefficientList::new(evals_to_coeffs(concat_mats.values.clone()));
                 let (ood_points, ood_answers) = repeat_with(|| {
-                    let ood_point = challenger.sample_algebra_element();
-                    let ood_answer =
-                        polynomial.evaluate(&MultilinearPoint::expand_from_univariate(
+                    let ood_point: Challenge = challenger.sample_algebra_element();
+                    let ood_answer = polynomial.evaluate_at_extension(
+                        &MultilinearPoint::expand_from_univariate(
                             ood_point,
                             concat_mats.meta.num_vars,
-                        ));
+                        ),
+                    );
                     (ood_point, ood_answer)
                 })
                 .take(config.committment_ood_samples)
@@ -246,7 +238,15 @@ where
                         })
                     });
 
-                let prover = Prover(config.clone());
+                // TODO(whir-p3): Use base elements in opening
+                let polynomial = CoefficientList::new(
+                    polynomial
+                        .coeffs()
+                        .into_par_iter()
+                        .copied()
+                        .map(Challenge::from)
+                        .collect(),
+                );
                 let witness = Witness {
                     polynomial,
                     prover_data: merkle_tree.take().unwrap(),
@@ -256,7 +256,9 @@ where
                 let mut prover_state = DomainSeparator::new("🌪️")
                     .add_whir_proof(&config)
                     .to_prover_state();
-                let proof = prover.prove(&mut prover_state, statement, witness).unwrap();
+                let proof = Prover(config.clone())
+                    .prove(&mut prover_state, statement, witness)
+                    .unwrap();
                 WhirProof {
                     ood_answers,
                     narg_string: prover_state.narg_string().to_vec(),
@@ -329,22 +331,17 @@ where
                 })
             });
 
-            let statement_verifier = StatementVerifier::from_statement(&statement);
-
-            let verifier = Verifier::new(&config);
-
             let mut verifier_state = DomainSeparator::new("🌪️")
                 .add_whir_proof(&config)
                 .to_verifier_state(&proof.narg_string);
-
-            verifier.verify(
+            Verifier::new(&config).verify(
                 &mut verifier_state,
                 &ParsedCommitment {
                     root: commitment,
                     ood_points,
                     ood_answers: proof.ood_answers.clone(),
                 },
-                &statement_verifier,
+                &StatementVerifier::from_statement(&statement),
                 &proof.proof,
             )
         })?;
