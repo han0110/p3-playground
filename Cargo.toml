@@ -47,5 +47,4 @@ p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "926a69e" }
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "926a69e" }
 p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "926a69e" }
 
-# FIXME: whir-p3 = { git = "http://github.com/tcoratger/whir-p3" }
-whir-p3 = { git = "http://github.com/han0110/whir-p3", branch = "tweak" }
+whir-p3 = { git = "http://github.com/tcoratger/whir-p3" }
