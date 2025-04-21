@@ -134,8 +134,8 @@ impl<Challenge: Field> IsLastRow<Challenge> {
     }
 }
 
-struct EqHelper<'a, Val, Challenge, Var> {
-    evals: Vec<Var>,
+struct EqHelper<'a, Val, Challenge, VarEF> {
+    evals: Vec<VarEF>,
     round: usize,
     r: &'a [Challenge],
     one_minus_r_inv: Vec<Challenge>,
@@ -143,10 +143,14 @@ struct EqHelper<'a, Val, Challenge, Var> {
     _marker: PhantomData<Val>,
 }
 
-impl<'a, Val: Field, Challenge: ExtensionField<Val>, Var: Send + Sync>
-    EqHelper<'a, Val, Challenge, Var>
+impl<'a, Val: Field, Challenge: ExtensionField<Val>, VarEF: Send + Sync>
+    EqHelper<'a, Val, Challenge, VarEF>
 {
-    fn new_inner(r: &'a [Challenge], evals: Vec<Var>) -> Self {
+    fn new(r: &'a [Challenge], scalar: VarEF) -> Self
+    where
+        VarEF: Copy + Algebra<Challenge>,
+    {
+        let evals = eq_poly(&r[1..], scalar);
         Self {
             evals,
             round: 0,
@@ -159,7 +163,7 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>, Var: Send + Sync>
         }
     }
 
-    fn evals(&self) -> impl IndexedParallelIterator<Item = &Var> {
+    fn evals(&self) -> impl IndexedParallelIterator<Item = &VarEF> {
         self.evals.par_iter().step_by(1 << self.round)
     }
 
@@ -175,12 +179,6 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>, Var: Send + Sync>
     }
 }
 
-impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge, Challenge> {
-    fn new(r: &'a [Challenge]) -> Self {
-        Self::new_inner(r, eq_poly(&r[1..], Challenge::ONE))
-    }
-}
-
 impl<'a, Val: Field, Challenge: ExtensionField<Val>>
     EqHelper<'a, Val, Challenge, Challenge::ExtensionPacking>
 {
@@ -188,7 +186,111 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
         let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
         let (r_lo, r_hi) = r.split_at(r.len() - log_packing_width);
         let scalar = Challenge::ExtensionPacking::from_ext_slice(&eq_poly(r_hi, Challenge::ONE));
-        Self::new_inner(r_lo, eq_poly(&r_lo[1..], scalar))
+        Self::new(r_lo, scalar)
+    }
+}
+
+struct EvalState<Val: Field, Challenge: ExtensionField<Val>, Var> {
+    width: usize,
+    main_eval: Vec<Var>,
+    main_diff: Vec<Var>,
+    is_first_row_diff: Option<Var>,
+    is_first_row_eval: Var,
+    is_last_row_diff: Option<Var>,
+    is_last_row_eval: Var,
+    is_transition_eval: Var,
+    _marker: PhantomData<(Val, Challenge)>,
+}
+
+impl<Val: Field, Challenge: ExtensionField<Val>, Var: Copy + Send + Sync + PrimeCharacteristicRing>
+    EvalState<Val, Challenge, Var>
+{
+    #[inline]
+    fn new(width: usize) -> Self {
+        Self {
+            width,
+            main_eval: vec![Var::ZERO; 2 * width],
+            main_diff: vec![Var::ZERO; 2 * width],
+            is_first_row_diff: None,
+            is_first_row_eval: Var::ZERO,
+            is_last_row_diff: None,
+            is_last_row_eval: Var::ZERO,
+            is_transition_eval: Var::ZERO,
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn prev_point(&mut self) {
+        self.main_eval.slice_sub_assign(&self.main_diff);
+        if let Some(is_first_row_diff) = self.is_first_row_diff {
+            self.is_first_row_eval -= is_first_row_diff;
+        }
+        if let Some(is_last_row_diff) = self.is_last_row_diff {
+            self.is_last_row_eval -= is_last_row_diff;
+            self.is_transition_eval = Var::ONE - self.is_last_row_eval
+        }
+    }
+
+    #[inline]
+    fn next_point(&mut self) {
+        self.main_eval.slice_add_assign(&self.main_diff);
+        if let Some(is_first_row_diff) = self.is_first_row_diff {
+            self.is_first_row_eval += is_first_row_diff;
+        }
+        if let Some(is_last_row_diff) = self.is_last_row_diff {
+            self.is_last_row_eval += is_last_row_diff;
+            self.is_transition_eval = Var::ONE - self.is_last_row_eval
+        }
+    }
+
+    #[inline]
+    fn eval<A, VarEF>(&self, air: &A, public_values: &[Val], alpha_powers: &[Challenge]) -> VarEF
+    where
+        A: for<'t> Air<ProverFolderWithVal<'t, Val, Challenge, Var, VarEF>>,
+        Var: Algebra<Val>,
+        VarEF: Algebra<Var> + From<Challenge>,
+    {
+        let mut builder = ProverFolderWithVal {
+            main: DenseMatrix::new(&self.main_eval, self.width),
+            public_values,
+            is_first_row: self.is_first_row_eval,
+            is_last_row: self.is_last_row_eval,
+            is_transition: self.is_transition_eval,
+            alpha_powers,
+            accumulator: VarEF::ZERO,
+            constraint_index: 0,
+        };
+        air.eval(&mut builder);
+        builder.accumulator
+    }
+}
+
+impl<Val: Field, Challenge: ExtensionField<Val>>
+    EvalState<Val, Challenge, Challenge::ExtensionPacking>
+{
+    #[inline]
+    fn eval_packed<A>(
+        &self,
+        air: &A,
+        public_values: &[Val],
+        alpha_powers: &[Challenge],
+    ) -> Challenge::ExtensionPacking
+    where
+        A: for<'t> Air<ProverFolderWithExtensionPacking<'t, Val, Challenge>>,
+    {
+        let mut builder = ProverFolderWithExtensionPacking {
+            main: DenseMatrix::new(ExtensionPacking::from_slice(&self.main_eval), self.width),
+            public_values,
+            is_first_row: ExtensionPacking(self.is_first_row_eval),
+            is_last_row: ExtensionPacking(self.is_last_row_eval),
+            is_transition: ExtensionPacking(self.is_transition_eval),
+            alpha_powers,
+            accumulator: ExtensionPacking(Challenge::ExtensionPacking::ZERO),
+            constraint_index: 0,
+        };
+        air.eval(&mut builder);
+        builder.accumulator.0
     }
 }
 
@@ -399,7 +501,7 @@ where
 
     let evals = {
         let round = r.len() - log2_strict_usize(input.height());
-        let mut eq_helper = EqHelper::new(&r[round..]);
+        let mut eq_helper = EqHelper::new(&r[round..], Challenge::ONE);
         for _round in round..log_height {
             let round_poly = compute_round_poly_algo_1(
                 air,
@@ -474,10 +576,11 @@ where
                 let mut state = EvalState::new(width);
                 state.main_eval.slice_assign_iter(lo);
                 state.main_diff.slice_sub_iter(hi, cloned(&state.main_eval));
-                state.is_first_eval = IsFirstRow(Val::ONE).eval_packed();
-                state.is_first_diff = (row == 0).then(|| -state.is_first_eval);
-                state.is_last_eval = Val::Packing::ZERO;
-                state.is_last_diff = (row == last_row).then(|| IsLastRow(Val::ONE).eval_packed());
+                state.is_first_row_eval = IsFirstRow(Val::ONE).eval_packed();
+                state.is_first_row_diff = (row == 0).then(|| -state.is_first_row_eval);
+                state.is_last_row_eval = Val::Packing::ZERO;
+                state.is_last_row_diff =
+                    (row == last_row).then(|| IsLastRow(Val::ONE).eval_packed());
                 state.is_transition_eval = Val::Packing::ONE;
                 sum.iter_mut().for_each(|sum| {
                     state.prev_point();
@@ -551,11 +654,12 @@ where
                     );
                 });
                 state.main_diff.slice_add_assign(&state.main_eval);
-                state.is_first_eval = Challenge::ExtensionPacking::ZERO;
-                state.is_first_diff = (row == 0).then(|| -is_first_row.eval_packed());
-                state.is_last_diff = (row == last_row).then(|| is_last_row.eval_packed());
-                state.is_last_eval = state.is_last_diff.unwrap_or_default();
-                state.is_transition_eval = Challenge::ExtensionPacking::ONE - state.is_last_eval;
+                state.is_first_row_eval = Challenge::ExtensionPacking::ZERO;
+                state.is_first_row_diff = (row == 0).then(|| -is_first_row.eval_packed());
+                state.is_last_row_diff = (row == last_row).then(|| is_last_row.eval_packed());
+                state.is_last_row_eval = state.is_last_row_diff.unwrap_or_default();
+                state.is_transition_eval =
+                    Challenge::ExtensionPacking::ONE - state.is_last_row_eval;
                 sum.iter_mut().enumerate().for_each(|(d, sum)| {
                     if d > 0 {
                         state.next_point();
@@ -615,11 +719,12 @@ where
                 let mut state = EvalState::new(width);
                 state.main_eval.slice_assign_iter(hi);
                 state.main_diff.slice_sub_iter(cloned(&state.main_eval), lo);
-                state.is_first_eval = Challenge::ExtensionPacking::ZERO;
-                state.is_first_diff = (row == 0).then(|| -is_first_row.eval_packed());
-                state.is_last_diff = (row == last_row).then(|| is_last_row.eval_packed());
-                state.is_last_eval = state.is_last_diff.unwrap_or_default();
-                state.is_transition_eval = Challenge::ExtensionPacking::ONE - state.is_last_eval;
+                state.is_first_row_eval = Challenge::ExtensionPacking::ZERO;
+                state.is_first_row_diff = (row == 0).then(|| -is_first_row.eval_packed());
+                state.is_last_row_diff = (row == last_row).then(|| is_last_row.eval_packed());
+                state.is_last_row_eval = state.is_last_row_diff.unwrap_or_default();
+                state.is_transition_eval =
+                    Challenge::ExtensionPacking::ONE - state.is_last_row_eval;
                 sum.iter_mut().enumerate().for_each(|(d, sum)| {
                     if d > 0 {
                         state.next_point();
@@ -679,11 +784,11 @@ where
                 let mut state = EvalState::new(width);
                 state.main_eval.slice_assign_iter(hi);
                 state.main_diff.slice_sub_iter(cloned(&state.main_eval), lo);
-                state.is_first_eval = Challenge::ZERO;
-                state.is_first_diff = (row == 0).then(|| -is_first_row.0);
-                state.is_last_diff = (row == last_row).then_some(is_last_row.0);
-                state.is_last_eval = state.is_last_diff.unwrap_or_default();
-                state.is_transition_eval = Challenge::ONE - state.is_last_eval;
+                state.is_first_row_eval = Challenge::ZERO;
+                state.is_first_row_diff = (row == 0).then(|| -is_first_row.0);
+                state.is_last_row_diff = (row == last_row).then_some(is_last_row.0);
+                state.is_last_row_eval = state.is_last_row_diff.unwrap_or_default();
+                state.is_transition_eval = Challenge::ONE - state.is_last_row_eval;
                 sum.iter_mut().enumerate().for_each(|(d, sum)| {
                     if d > 0 {
                         state.next_point();
@@ -708,108 +813,4 @@ where
             .map(|row| dot_product(chain![[eval_0], cloned(&evals)], row))
             .collect(),
     )
-}
-
-struct EvalState<Val: Field, Challenge: ExtensionField<Val>, Var> {
-    width: usize,
-    main_eval: Vec<Var>,
-    main_diff: Vec<Var>,
-    is_first_diff: Option<Var>,
-    is_first_eval: Var,
-    is_last_diff: Option<Var>,
-    is_last_eval: Var,
-    is_transition_eval: Var,
-    _marker: PhantomData<(Val, Challenge)>,
-}
-
-impl<Val: Field, Challenge: ExtensionField<Val>, Var: Copy + Send + Sync + PrimeCharacteristicRing>
-    EvalState<Val, Challenge, Var>
-{
-    #[inline]
-    fn new(width: usize) -> Self {
-        Self {
-            width,
-            main_eval: vec![Var::ZERO; 2 * width],
-            main_diff: vec![Var::ZERO; 2 * width],
-            is_first_diff: None,
-            is_first_eval: Var::ZERO,
-            is_last_diff: None,
-            is_last_eval: Var::ZERO,
-            is_transition_eval: Var::ZERO,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    fn prev_point(&mut self) {
-        self.main_eval.slice_sub_assign(&self.main_diff);
-        if let Some(is_first_diff) = self.is_first_diff {
-            self.is_first_eval -= is_first_diff;
-        }
-        if let Some(is_last_diff) = self.is_last_diff {
-            self.is_last_eval -= is_last_diff;
-            self.is_transition_eval = Var::ONE - self.is_last_eval
-        }
-    }
-
-    #[inline]
-    fn next_point(&mut self) {
-        self.main_eval.slice_add_assign(&self.main_diff);
-        if let Some(is_first_diff) = self.is_first_diff {
-            self.is_first_eval += is_first_diff;
-        }
-        if let Some(is_last_diff) = self.is_last_diff {
-            self.is_last_eval += is_last_diff;
-            self.is_transition_eval = Var::ONE - self.is_last_eval
-        }
-    }
-
-    #[inline]
-    fn eval<A, VarEF>(&self, air: &A, public_values: &[Val], alpha_powers: &[Challenge]) -> VarEF
-    where
-        A: for<'t> Air<ProverFolderWithVal<'t, Val, Challenge, Var, VarEF>>,
-        Var: Algebra<Val>,
-        VarEF: Algebra<Var> + From<Challenge>,
-    {
-        let mut builder = ProverFolderWithVal {
-            main: DenseMatrix::new(&self.main_eval, self.width),
-            public_values,
-            is_first_row: self.is_first_eval,
-            is_last_row: self.is_last_eval,
-            is_transition: self.is_transition_eval,
-            alpha_powers,
-            accumulator: VarEF::ZERO,
-            constraint_index: 0,
-        };
-        air.eval(&mut builder);
-        builder.accumulator
-    }
-}
-
-impl<Val: Field, Challenge: ExtensionField<Val>>
-    EvalState<Val, Challenge, Challenge::ExtensionPacking>
-{
-    #[inline]
-    fn eval_packed<A>(
-        &self,
-        air: &A,
-        public_values: &[Val],
-        alpha_powers: &[Challenge],
-    ) -> Challenge::ExtensionPacking
-    where
-        A: for<'t> Air<ProverFolderWithExtensionPacking<'t, Val, Challenge>>,
-    {
-        let mut builder = ProverFolderWithExtensionPacking {
-            main: DenseMatrix::new(ExtensionPacking::from_slice(&self.main_eval), self.width),
-            public_values,
-            is_first_row: ExtensionPacking(self.is_first_eval),
-            is_last_row: ExtensionPacking(self.is_last_eval),
-            is_transition: ExtensionPacking(self.is_transition_eval),
-            alpha_powers,
-            accumulator: ExtensionPacking(Challenge::ExtensionPacking::ZERO),
-            constraint_index: 0,
-        };
-        air.eval(&mut builder);
-        builder.accumulator.0
-    }
 }
