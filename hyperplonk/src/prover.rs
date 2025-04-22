@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::cmp::min;
 use core::marker::PhantomData;
 
-use itertools::{Itertools, chain, cloned, rev};
+use itertools::{Itertools, chain, cloned, izip};
 use p3_air::{Air, BaseAirWithPublicValues};
 use p3_challenger::FieldChallenger;
 use p3_field::{
@@ -19,7 +19,7 @@ use tracing::{info_span, instrument};
 use crate::{
     CompressedRoundPoly, ExtensionPacking, FieldSlice, PackedExtensionValue, Proof,
     ProverFolderWithExtensionPacking, ProverFolderWithVal, SumcheckProof, SymbolicAirBuilder,
-    eq_expand, eq_poly, fix_var, fix_var_ext_packed, horner, meta, pack_left_right, vander_mat_inv,
+    eq_expand, eq_poly, fix_var, fix_var_packed, horner, meta, pack_left_right, vander_mat_inv,
     vec_add,
 };
 
@@ -190,6 +190,64 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
     }
 }
 
+struct Quotient<Val: Field, Challenge: ExtensionField<Val>> {
+    q_bar: Vec<Challenge::ExtensionPacking>,
+    q: RowMajorMatrix<Challenge::ExtensionPacking>,
+    barycentric_denoms: Vec<Challenge>,
+}
+
+impl<Val: Field, Challenge: ExtensionField<Val>> Quotient<Val, Challenge> {
+    fn new(packed_height: usize, degree: usize) -> Self {
+        let barycentric_denoms = batch_multiplicative_inverse(
+            &(2..degree as i32 + 1)
+                .map(|i| {
+                    (0..degree as i32 + 1)
+                        .filter(|j| *j != i)
+                        .map(|j| Challenge::from_i32(i - j))
+                        .product()
+                })
+                .collect_vec(),
+        );
+        Self {
+            q_bar: Vec::new(),
+            q: RowMajorMatrix::new(
+                vec![Challenge::ExtensionPacking::ZERO; (degree - 1) * packed_height / 2],
+                degree - 1,
+            ),
+            barycentric_denoms,
+        }
+    }
+
+    fn fix_var(&mut self, z_i: Challenge) {
+        let weights = izip!(2.., &self.barycentric_denoms)
+            .map(|(i, denom)| {
+                (0..self.barycentric_denoms.len() + 2)
+                    .filter(|j| *j != i)
+                    .map(|j| z_i - Challenge::from_usize(j))
+                    .product::<Challenge>()
+                    * *denom
+            })
+            .collect_vec();
+        if self.q_bar.is_empty() {
+            self.q_bar = self
+                .q
+                .par_rows()
+                .map(|row| dot_product::<Challenge::ExtensionPacking, _, _>(row, cloned(&weights)))
+                .collect();
+        } else {
+            self.q_bar = fix_var_packed(RowMajorMatrixView::new_col(&self.q_bar), z_i).values;
+            self.q_bar
+                .par_iter_mut()
+                .zip(self.q.par_rows())
+                .for_each(|(q_bar, row)| {
+                    *q_bar +=
+                        dot_product::<Challenge::ExtensionPacking, _, _>(row, cloned(&weights))
+                });
+        }
+        self.q.values.truncate(self.q.values.len() / 2);
+    }
+}
+
 struct EvalState<Val: Field, Challenge: ExtensionField<Val>, Var> {
     width: usize,
     main_eval: Vec<Var>,
@@ -217,18 +275,6 @@ impl<Val: Field, Challenge: ExtensionField<Val>, Var: Copy + Send + Sync + Prime
             is_last_row_eval: Var::ZERO,
             is_transition_eval: Var::ZERO,
             _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    fn prev_point(&mut self) {
-        self.main_eval.slice_sub_assign(&self.main_diff);
-        if let Some(is_first_row_diff) = self.is_first_row_diff {
-            self.is_first_row_eval -= is_first_row_diff;
-        }
-        if let Some(is_last_row_diff) = self.is_last_row_diff {
-            self.is_last_row_eval -= is_last_row_diff;
-            self.is_transition_eval = Var::ONE - self.is_last_row_eval
         }
     }
 
@@ -353,6 +399,7 @@ where
             info_span!("pack input next").in_scope(|| pack_left_right(input.as_view(), 1));
 
         let mut eq_helper = EqHelper::new_packed(&r);
+        let mut quotient = Quotient::new(input_local.height(), degree);
 
         {
             let round_poly = compute_first_round_poly(
@@ -363,6 +410,7 @@ where
                 &input_next,
                 &alpha_powers,
                 &eq_helper,
+                &mut quotient,
             );
 
             round_poly
@@ -374,6 +422,7 @@ where
             is_first_row.fix_var(z_i);
             is_last_row.fix_var(z_i);
             eq_helper.next_round();
+            quotient.fix_var(z_i);
 
             compressed_round_polys.push(round_poly.into_compressed());
             z.push(z_i);
@@ -401,6 +450,7 @@ where
                 &is_last_row,
                 &eq_helper,
                 &eq_z[..1 << round],
+                &mut quotient,
             );
 
             round_poly
@@ -413,6 +463,7 @@ where
             is_last_row.fix_var(z_i);
             eq_helper.next_round();
             eq_expand(&mut eq_z, z_i, round);
+            quotient.fix_var(z_i);
 
             compressed_round_polys.push(round_poly.into_compressed());
             z.push(z_i);
@@ -451,6 +502,7 @@ where
                 &is_first_row,
                 &is_last_row,
                 &eq_helper,
+                &mut quotient,
             );
 
             round_poly
@@ -462,7 +514,8 @@ where
             is_first_row.fix_var(z_i);
             is_last_row.fix_var(z_i);
             eq_helper.next_round();
-            input = fix_var_ext_packed(input.as_view(), z_i);
+            input = fix_var_packed(input.as_view(), z_i);
+            quotient.fix_var(z_i);
 
             compressed_round_polys.push(round_poly.into_compressed());
             z.push(z_i);
@@ -499,10 +552,10 @@ where
         )
     };
 
-    let evals = {
+    if input.height() > 1 {
         let round = r.len() - log2_strict_usize(input.height());
         let mut eq_helper = EqHelper::new(&r[round..], Challenge::ONE);
-        for _round in round..log_height {
+        for _ in round..log_height {
             let round_poly = compute_round_poly_algo_1(
                 air,
                 degree,
@@ -529,9 +582,9 @@ where
             compressed_round_polys.push(round_poly.into_compressed());
             z.push(z_i);
         }
-
-        input.values
     };
+
+    let evals = input.values;
 
     (
         z,
@@ -543,6 +596,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, fields(dim = %input_local.height().ilog2()))]
 fn compute_first_round_poly<Val, Challenge, A>(
     air: &A,
@@ -552,6 +606,7 @@ fn compute_first_round_poly<Val, Challenge, A>(
     input_next: &RowMajorMatrix<Val::Packing>,
     alpha_powers: &[Challenge],
     eq_helper: &EqHelper<Val, Challenge, Challenge::ExtensionPacking>,
+    quotient: &mut Quotient<Val, Challenge>,
 ) -> RoundPoly<Challenge>
 where
     Val: Field,
@@ -567,24 +622,26 @@ where
         .par_row_chunks(2)
         .zip(input_next.par_row_chunks(2))
         .zip(eq_helper.evals())
+        .zip(quotient.q.par_rows_mut())
         .enumerate()
         .par_fold_reduce(
             || vec![Challenge::ExtensionPacking::ZERO; degree - 1],
-            |mut sum, (row, ((local, next), eq_eval))| {
+            |mut sum, (row, (((local, next), eq_eval), q))| {
                 let lo = chain![local.row(0), next.row(0)];
                 let hi = chain![local.row(1), next.row(1)];
                 let mut state = EvalState::new(width);
-                state.main_eval.slice_assign_iter(lo);
-                state.main_diff.slice_sub_iter(hi, cloned(&state.main_eval));
-                state.is_first_row_eval = IsFirstRow(Val::ONE).eval_packed();
-                state.is_first_row_diff = (row == 0).then(|| -state.is_first_row_eval);
-                state.is_last_row_eval = Val::Packing::ZERO;
+                state.main_eval.slice_assign_iter(hi);
+                state.main_diff.slice_sub_iter(cloned(&state.main_eval), lo);
+                state.is_first_row_eval = Val::Packing::ZERO;
+                state.is_first_row_diff = (row == 0).then(|| -IsFirstRow(Val::ONE).eval_packed());
                 state.is_last_row_diff =
                     (row == last_row).then(|| IsLastRow(Val::ONE).eval_packed());
+                state.is_last_row_eval = state.is_last_row_diff.unwrap_or_default();
                 state.is_transition_eval = Val::Packing::ONE;
-                sum.iter_mut().for_each(|sum| {
-                    state.prev_point();
-                    *sum += *eq_eval * state.eval(air, public_values, alpha_powers)
+                sum.iter_mut().zip(q).for_each(|(sum, q)| {
+                    state.next_point();
+                    *q = state.eval(air, public_values, alpha_powers);
+                    *sum += *eq_eval * *q;
                 });
                 sum
             },
@@ -594,7 +651,7 @@ where
     let evals = evals.into_iter().map(|eval| eval.ext_sum()).collect_vec();
 
     RoundPoly(
-        vander_mat_inv(rev(1 - degree as isize..2).map(Val::from_isize))
+        vander_mat_inv((0..degree + 1).map(Val::from_usize))
             .rows()
             .map(|row| dot_product(chain![[Challenge::ZERO; 2], cloned(&evals)], row))
             .collect(),
@@ -615,6 +672,7 @@ fn compute_round_poly_algo_2<Val, Challenge, A>(
     is_last_row: &IsLastRow<Challenge>,
     eq_helper: &EqHelper<Val, Challenge, Challenge::ExtensionPacking>,
     eq_z: &[Challenge],
+    quotient: &mut Quotient<Val, Challenge>,
 ) -> RoundPoly<Challenge>
 where
     Val: Field,
@@ -628,10 +686,12 @@ where
         .par_row_chunks(2 * eq_z.len())
         .zip(input_next.par_row_chunks(2 * eq_z.len()))
         .zip(eq_helper.evals())
+        .zip(quotient.q_bar.par_chunks(2))
+        .zip(quotient.q.par_rows_mut())
         .enumerate()
         .par_fold_reduce(
-            || vec![Challenge::ExtensionPacking::ZERO; degree],
-            |mut sum, (row, ((local, next), eq_eval))| {
+            || vec![Challenge::ExtensionPacking::ZERO; degree - 1],
+            |mut sum, (row, ((((local, next), eq_eval), q_bar), q))| {
                 let mut state = EvalState::new(width);
                 eq_z.iter().enumerate().for_each(|(i, eq_z_i)| {
                     state.main_diff[..width].slice_sub_assign_scaled_iter(
@@ -660,11 +720,14 @@ where
                 state.is_last_row_eval = state.is_last_row_diff.unwrap_or_default();
                 state.is_transition_eval =
                     Challenge::ExtensionPacking::ONE - state.is_last_row_eval;
+                let mut q_bar_eval = q_bar[1];
+                let q_bar_diff = q_bar[1] - q_bar[0];
                 sum.iter_mut().enumerate().for_each(|(d, sum)| {
-                    if d > 0 {
-                        state.next_point();
-                    }
-                    *sum += *eq_eval * state.eval_packed(air, public_values, alpha_powers);
+                    q_bar_eval += q_bar_diff;
+                    state.next_point();
+                    let eval = state.eval_packed(air, public_values, alpha_powers);
+                    q[d] = eval - q_bar_eval;
+                    *sum += eval * *eq_eval;
                 });
                 sum
             },
@@ -676,12 +739,26 @@ where
         .map(|eval| eval.ext_sum() * eq_helper.correcting_factor)
         .collect_vec();
 
-    let eval_0 = eq_helper.eval_0(claim, evals[0]);
+    let eval_1 = quotient.q_bar[1..]
+        .par_iter()
+        .step_by(2)
+        .zip(eq_helper.evals())
+        .map(|(a, b)| *a * *b)
+        .sum::<Challenge::ExtensionPacking>()
+        .ext_sum()
+        * eq_helper.correcting_factor;
+    let eval_0 = eq_helper.eval_0(claim, eval_1);
+
+    assert_eq!(
+        eval_0 * (Challenge::ONE - eq_helper.r[eq_helper.round])
+            + eval_1 * eq_helper.r[eq_helper.round],
+        claim
+    );
 
     RoundPoly(
         vander_mat_inv((0..degree + 1).map(Val::from_usize))
             .rows()
-            .map(|row| dot_product(chain![[eval_0], cloned(&evals)], row))
+            .map(|row| dot_product(chain![[eval_0, eval_1], cloned(&evals)], row))
             .collect(),
     )
 }
@@ -698,6 +775,7 @@ fn compute_round_poly_algo_1_packed<Val, Challenge, A>(
     is_first_row: &IsFirstRow<Challenge>,
     is_last_row: &IsLastRow<Challenge>,
     eq_helper: &EqHelper<Val, Challenge, Challenge::ExtensionPacking>,
+    quotient: &mut Quotient<Val, Challenge>,
 ) -> RoundPoly<Challenge>
 where
     Val: Field,
@@ -710,10 +788,12 @@ where
     let evals = input
         .par_row_chunks(2)
         .zip(eq_helper.evals())
+        .zip(quotient.q_bar.par_chunks(2))
+        .zip(quotient.q.par_rows_mut())
         .enumerate()
         .par_fold_reduce(
-            || vec![Challenge::ExtensionPacking::ZERO; degree],
-            |mut sum, (row, (main, eq_eval))| {
+            || vec![Challenge::ExtensionPacking::ZERO; degree - 1],
+            |mut sum, (row, (((main, eq_eval), q_bar), q))| {
                 let lo = main.row(0);
                 let hi = main.row(1);
                 let mut state = EvalState::new(width);
@@ -725,11 +805,14 @@ where
                 state.is_last_row_eval = state.is_last_row_diff.unwrap_or_default();
                 state.is_transition_eval =
                     Challenge::ExtensionPacking::ONE - state.is_last_row_eval;
+                let mut q_bar_eval = q_bar[1];
+                let q_bar_diff = q_bar[1] - q_bar[0];
                 sum.iter_mut().enumerate().for_each(|(d, sum)| {
-                    if d > 0 {
-                        state.next_point();
-                    }
-                    *sum += *eq_eval * state.eval_packed(air, public_values, alpha_powers)
+                    q_bar_eval += q_bar_diff;
+                    state.next_point();
+                    let eval = state.eval_packed(air, public_values, alpha_powers);
+                    q[d] = eval - q_bar_eval;
+                    *sum += eval * *eq_eval;
                 });
                 sum
             },
@@ -741,12 +824,20 @@ where
         .map(|eval| eval.ext_sum() * eq_helper.correcting_factor)
         .collect_vec();
 
-    let eval_0 = eq_helper.eval_0(claim, evals[0]);
+    let eval_1 = quotient.q_bar[1..]
+        .par_iter()
+        .step_by(2)
+        .zip(eq_helper.evals())
+        .map(|(a, b)| *a * *b)
+        .sum::<Challenge::ExtensionPacking>()
+        .ext_sum()
+        * eq_helper.correcting_factor;
+    let eval_0 = eq_helper.eval_0(claim, eval_1);
 
     RoundPoly(
         vander_mat_inv((0..degree + 1).map(Val::from_usize))
             .rows()
-            .map(|row| dot_product(chain![[eval_0], cloned(&evals)], row))
+            .map(|row| dot_product(chain![[eval_0, eval_1], cloned(&evals)], row))
             .collect(),
     )
 }

@@ -121,7 +121,7 @@ pub(crate) fn fix_var<F: Field, EF: ExtensionField<F>>(
 }
 
 #[instrument(level = "debug", skip_all, fields(dim = %mat.height().ilog2()))]
-pub(crate) fn fix_var_ext_packed<F: Field, EF: ExtensionField<F>>(
+pub(crate) fn fix_var_packed<F: Field, EF: ExtensionField<F>>(
     mat: RowMajorMatrixView<EF::ExtensionPacking>,
     z_i: EF,
 ) -> RowMajorMatrix<EF::ExtensionPacking> {
