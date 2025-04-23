@@ -3,7 +3,7 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, BaseAirWithPu
 use p3_challenger::{FieldChallenger, HashChallenger, SerializingChallenger32};
 use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
-use p3_hyperplonk::{meta, prove, verify};
+use p3_hyperplonk::{AirMeta, prove, verify};
 use p3_keccak::Keccak256Hash;
 use p3_koala_bear::KoalaBear;
 use p3_matrix::Matrix;
@@ -89,7 +89,7 @@ fn run_mul_air(degree: usize) {
     let mut rng = StdRng::from_os_rng();
 
     let air = MulAir { degree };
-    assert_eq!(meta::<Val, _>(&air).1, degree);
+    assert_eq!(AirMeta::new::<Val, _>(&air).degree, degree);
 
     for num_vars in 0..12 {
         let (input, output) = air.generate_trace_rows(num_vars, &mut rng);

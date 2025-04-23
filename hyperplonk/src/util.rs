@@ -4,7 +4,8 @@ use core::mem::swap;
 
 use itertools::{Itertools, enumerate, izip, zip_eq};
 use p3_field::{
-    Algebra, ExtensionField, Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing,
+    Algebra, BasedVectorSpace, ExtensionField, Field, PackedFieldExtension, PackedValue,
+    PrimeCharacteristicRing,
 };
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
@@ -104,6 +105,23 @@ pub(crate) fn fix_var<
             })
             .collect(),
         mat.width(),
+    )
+}
+
+pub(crate) fn unpack_row<Val: Field, Challenge: ExtensionField<Val>>(
+    row: &[Challenge::ExtensionPacking],
+) -> RowMajorMatrix<Challenge> {
+    let width = row.len();
+    RowMajorMatrix::new(
+        (0..width * Val::Packing::WIDTH)
+            .into_par_iter()
+            .map(|i| {
+                Challenge::from_basis_coefficients_fn(|j| {
+                    row[i % width].as_basis_coefficients_slice()[j].as_slice()[i / width]
+                })
+            })
+            .collect(),
+        width,
     )
 }
 

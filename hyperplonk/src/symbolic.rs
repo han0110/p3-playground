@@ -367,12 +367,32 @@ impl<F: Field> AirBuilderWithPublicValues for SymbolicAirBuilder<F> {
     }
 }
 
-pub fn meta<Val, A>(air: &A) -> (usize, usize)
-where
-    Val: Field,
-    A: Air<SymbolicAirBuilder<Val>> + BaseAirWithPublicValues<Val>,
-{
-    let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values());
-    air.eval(&mut builder);
-    (builder.constraints.len(), max_degree(&builder.constraints))
+#[derive(Debug, Clone, Copy)]
+pub struct AirMeta {
+    pub width: usize,
+    pub degree: usize,
+    pub constraint_count: usize,
+    pub public_value_count: usize,
+}
+
+impl AirMeta {
+    pub fn new<Val, A>(air: &A) -> Self
+    where
+        Val: Field,
+        A: Air<SymbolicAirBuilder<Val>> + BaseAirWithPublicValues<Val>,
+    {
+        let width = air.width();
+        let public_value_count = air.num_public_values();
+        let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values());
+        air.eval(&mut builder);
+        let degree = max_degree(&builder.constraints);
+        assert!(degree >= 2, "Not yet supported");
+        let constraint_count = builder.constraints.len();
+        Self {
+            width,
+            degree,
+            constraint_count,
+            public_value_count,
+        }
+    }
 }

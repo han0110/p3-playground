@@ -6,8 +6,19 @@ use p3_air::{AirBuilder, AirBuilderWithPublicValues};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing};
 use p3_matrix::dense::RowMajorMatrixView;
 
+pub type ProverFolderOnExtension<'t, Val, Challenge> =
+    ProverFolderGeneric<'t, Val, Challenge, Challenge, Challenge>;
+
+pub type ProverFolderOnPacking<'t, Val, Challenge> = ProverFolderGeneric<
+    't,
+    Val,
+    Challenge,
+    <Val as Field>::Packing,
+    <Challenge as ExtensionField<Val>>::ExtensionPacking,
+>;
+
 #[derive(Debug)]
-pub struct ProverFolderWithVal<'a, F, EF, Var, VarEF> {
+pub struct ProverFolderGeneric<'a, F, EF, Var, VarEF> {
     pub main: RowMajorMatrixView<'a, Var>,
     pub public_values: &'a [F],
     pub is_first_row: Var,
@@ -18,7 +29,7 @@ pub struct ProverFolderWithVal<'a, F, EF, Var, VarEF> {
     pub constraint_index: usize,
 }
 
-impl<'a, F, EF, Var, VarEF> AirBuilder for ProverFolderWithVal<'a, F, EF, Var, VarEF>
+impl<'a, F, EF, Var, VarEF> AirBuilder for ProverFolderGeneric<'a, F, EF, Var, VarEF>
 where
     F: Field,
     EF: ExtensionField<F>,
@@ -63,7 +74,7 @@ where
     }
 }
 
-impl<F, EF, Var, VarEF> AirBuilderWithPublicValues for ProverFolderWithVal<'_, F, EF, Var, VarEF>
+impl<F, EF, Var, VarEF> AirBuilderWithPublicValues for ProverFolderGeneric<'_, F, EF, Var, VarEF>
 where
     F: Field,
     EF: ExtensionField<F>,
@@ -83,7 +94,7 @@ where
 //        The main constraint is `AirBuilder` requires `Var: Algebra<F>` but
 //        `EF::ExtensionPacking` only has `Algebra<EF>`.
 #[derive(Debug)]
-pub struct ProverFolderWithExtensionPacking<'a, F: Field, EF: ExtensionField<F>> {
+pub struct ProverFolderOnExtensionPacking<'a, F: Field, EF: ExtensionField<F>> {
     pub main: RowMajorMatrixView<'a, ExtensionPacking<F, EF>>,
     pub public_values: &'a [F],
     pub is_first_row: ExtensionPacking<F, EF>,
@@ -94,9 +105,7 @@ pub struct ProverFolderWithExtensionPacking<'a, F: Field, EF: ExtensionField<F>>
     pub constraint_index: usize,
 }
 
-impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder
-    for ProverFolderWithExtensionPacking<'a, F, EF>
-{
+impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for ProverFolderOnExtensionPacking<'a, F, EF> {
     type F = F;
     type Expr = ExtensionPacking<F, EF>;
     type Var = ExtensionPacking<F, EF>;
@@ -136,7 +145,7 @@ impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder
 }
 
 impl<F: Field, EF: ExtensionField<F>> AirBuilderWithPublicValues
-    for ProverFolderWithExtensionPacking<'_, F, EF>
+    for ProverFolderOnExtensionPacking<'_, F, EF>
 {
     type PublicVar = F;
 

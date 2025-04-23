@@ -6,7 +6,7 @@ use p3_challenger::FieldChallenger;
 use p3_field::{ExtensionField, Field, batch_multiplicative_inverse};
 use p3_matrix::dense::RowMajorMatrixView;
 
-use crate::{Proof, SumcheckProof, SymbolicAirBuilder, VerifierFolder, meta};
+use crate::{AirMeta, Proof, SumcheckProof, SymbolicAirBuilder, VerifierFolder};
 
 #[derive(Debug)]
 pub enum Error {
@@ -28,7 +28,7 @@ where
         + for<'t> Air<VerifierFolder<'t, Val, Challenge>>,
 {
     // TODO: Preprocess the meta.
-    let (_, degree) = meta(air);
+    let meta = AirMeta::new(air);
 
     // TODO: Observe commitment.
 
@@ -36,7 +36,13 @@ where
 
     // TODO: Verify LogUp with fractional sumchecks.
 
-    let _z = verify_zero_sumcheck(air, degree, public_values, &proof.zero_sumcheck, challenger)?;
+    let _z = verify_zero_sumcheck(
+        air,
+        meta.degree,
+        public_values,
+        &proof.zero_sumcheck,
+        challenger,
+    )?;
 
     // TODO: PCS verify.
 
