@@ -367,9 +367,11 @@ impl<F: Field> AirBuilderWithPublicValues for SymbolicAirBuilder<F> {
     }
 }
 
-pub fn meta<Val: Field>(
-    air: &(impl Air<SymbolicAirBuilder<Val>> + BaseAirWithPublicValues<Val>),
-) -> (usize, usize) {
+pub fn meta<Val, A>(air: &A) -> (usize, usize)
+where
+    Val: Field,
+    A: Air<SymbolicAirBuilder<Val>> + BaseAirWithPublicValues<Val>,
+{
     let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values());
     air.eval(&mut builder);
     (builder.constraints.len(), max_degree(&builder.constraints))

@@ -11,22 +11,6 @@ use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
 use tracing::instrument;
 
-pub(crate) fn pack_left_right<F: Field>(
-    mat: RowMajorMatrixView<F>,
-    rotation: usize,
-) -> RowMajorMatrix<F::Packing> {
-    let len = mat.values.len();
-    let packed_len = len / F::Packing::WIDTH;
-    let offset = rotation * mat.width();
-    RowMajorMatrix::new(
-        (0..packed_len)
-            .into_par_iter()
-            .map(move |i| F::Packing::from_fn(|j| mat.values[(offset + i + j * packed_len) % len]))
-            .collect::<Vec<_>>(),
-        mat.width(),
-    )
-}
-
 #[inline]
 pub(crate) fn vec_add<F: Copy + PrimeCharacteristicRing>(mut lhs: Vec<F>, rhs: Vec<F>) -> Vec<F> {
     lhs.slice_add_assign(&rhs);
@@ -103,7 +87,10 @@ pub fn eq_eval<'a, F: Field>(
 }
 
 #[instrument(level = "debug", skip_all, fields(dim = %mat.height().ilog2()))]
-pub(crate) fn fix_var<F: Field, EF: ExtensionField<F>>(
+pub(crate) fn fix_var<
+    F: Copy + Send + Sync + PrimeCharacteristicRing,
+    EF: Copy + Send + Sync + Algebra<F>,
+>(
     mat: RowMajorMatrixView<F>,
     z_i: EF,
 ) -> RowMajorMatrix<EF> {
@@ -114,24 +101,6 @@ pub(crate) fn fix_var<F: Field, EF: ExtensionField<F>>(
                     .into_par_iter()
                     .zip(&rows.values[mat.width()..])
                     .map(|(lo, hi)| z_i * (*hi - *lo) + *lo)
-            })
-            .collect(),
-        mat.width(),
-    )
-}
-
-#[instrument(level = "debug", skip_all, fields(dim = %mat.height().ilog2()))]
-pub(crate) fn fix_var_packed<F: Field, EF: ExtensionField<F>>(
-    mat: RowMajorMatrixView<EF::ExtensionPacking>,
-    z_i: EF,
-) -> RowMajorMatrix<EF::ExtensionPacking> {
-    RowMajorMatrix::new(
-        mat.par_row_chunks(2)
-            .flat_map(|rows| {
-                rows.values[..mat.width()]
-                    .into_par_iter()
-                    .zip(&rows.values[mat.width()..])
-                    .map(|(lo, hi)| (*hi - *lo) * z_i + *lo)
             })
             .collect(),
         mat.width(),
