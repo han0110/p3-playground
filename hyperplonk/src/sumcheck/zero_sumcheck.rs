@@ -17,9 +17,9 @@ use p3_util::log2_strict_usize;
 use tracing::{info_span, instrument};
 
 use crate::{
-    AirMeta, EqHelper, ExtensionPacking, FieldSlice, PackedExtensionValue, ProverFolderGeneric,
-    ProverFolderOnExtension, ProverFolderOnExtensionPacking, ProverFolderOnPacking, RoundPoly,
-    eq_expand, fix_var, unpack_row, vec_add,
+    AirMeta, CompressedRoundPoly, EqHelper, ExtensionPacking, FieldSlice, PackedExtensionValue,
+    ProverFolderGeneric, ProverFolderOnExtension, ProverFolderOnExtensionPacking,
+    ProverFolderOnPacking, RoundPoly, eq_expand, fix_var, unpack_row, vec_add,
 };
 
 // TODO: Find a better way to choose the optimal switch-over automatically.
@@ -280,19 +280,17 @@ where
         + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
     pub(crate) fn new(
-        air: &'a A,
         meta: AirMeta,
+        air: &'a A,
         public_values: &'a [Val],
+        input: RowMajorMatrixView<Val>,
         alpha_powers: &'a [Challenge],
         max_log_height: usize,
-        claim: Challenge,
-        input: RowMajorMatrixView<Val>,
     ) -> Self {
         let width = meta.width;
         let height = input.height();
         let log_height = log2_strict_usize(height);
         let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
-        let claim = claim * Val::from_usize(1 << (max_log_height - log_height));
         let witness = if log_height > log_packing_width {
             let log_packed_height = log_height - log_packing_width;
             let input = info_span!("pack input local and next together").in_scope(|| {
@@ -340,9 +338,9 @@ where
             air,
             meta,
             public_values,
-            alpha_powers: &alpha_powers[alpha_powers.len() - meta.constraint_count..],
+            alpha_powers,
             padded_rounds: max_log_height - log_height,
-            claim,
+            claim: Challenge::ZERO,
             round_poly: RoundPoly(Vec::new()),
             witness,
             is_first_row: IsFirstRow(Challenge::ONE),
@@ -354,10 +352,9 @@ where
         &mut self,
         round: usize,
         eq_helper: &EqHelper<Val, Challenge>,
-    ) -> RoundPoly<Challenge> {
+    ) -> CompressedRoundPoly<Challenge> {
         if round < self.padded_rounds {
-            self.round_poly = RoundPoly(vec![self.claim.halve()]);
-            return self.round_poly.clone();
+            return CompressedRoundPoly(vec![Challenge::ZERO]);
         }
 
         self.round_poly = match &mut self.witness {
@@ -368,7 +365,7 @@ where
             Witness::ExtensionPacking { .. } => self.compute_round_poly_algo_1(round, eq_helper),
             Witness::Extension { .. } => self.compute_round_poly_algo_1_small(round, eq_helper),
         };
-        self.round_poly.clone()
+        self.round_poly.clone().into_compressed()
     }
 
     #[instrument(skip_all)]
@@ -417,7 +414,7 @@ where
                 vec_add,
             )
             .into_iter()
-            .map(|eval| eval.ext_sum());
+            .map(|eval| eval.ext_sum() * eq_helper.correcting_factor(round));
 
         RoundPoly::from_evals(chain![[Challenge::ZERO; 2], extra_evals])
     }

@@ -3,7 +3,7 @@ use std::time::Instant;
 use p3_air::{Air, AirBuilder, BaseAir, BaseAirWithPublicValues};
 use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_field::extension::BinomialExtensionField;
-use p3_hyperplonk::{prove, verify};
+use p3_hyperplonk::{ProverInput, VerifierInput, prove, verify};
 use p3_keccak::Keccak256Hash;
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_poseidon2_air::{RoundConstants, generate_trace_rows, num_cols};
@@ -40,15 +40,15 @@ pub struct Poseidon2Air(
     >,
 );
 
-impl<F> BaseAir<F> for Poseidon2Air {
+impl<F> BaseAir<F> for &Poseidon2Air {
     fn width(&self) -> usize {
         num_cols::<WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>()
     }
 }
 
-impl<F> BaseAirWithPublicValues<F> for Poseidon2Air {}
+impl<F> BaseAirWithPublicValues<F> for &Poseidon2Air {}
 
-impl<AB: AirBuilder<F = Val>> Air<AB> for Poseidon2Air {
+impl<AB: AirBuilder<F = Val>> Air<AB> for &Poseidon2Air {
     #[inline]
     fn eval(&self, builder: &mut AB) {
         self.0.eval(builder);
@@ -61,7 +61,7 @@ fn main() {
     let air = Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
     let num_vars = 20;
 
-    let input = generate_trace_rows::<
+    let trace = generate_trace_rows::<
         _,
         LinearLayers,
         WIDTH,
@@ -76,8 +76,9 @@ fn main() {
 
     let start = Instant::now();
     while Instant::now().duration_since(start).as_secs() < 3 {
+        let prover_inputs = vec![ProverInput::new(&air, Vec::new(), trace.clone())];
         let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
-        prove::<_, Challenge, _>(&air, &[], input.clone(), challenger);
+        prove::<_, Challenge, _>(prover_inputs, challenger);
     }
 
     let env_filter = EnvFilter::builder()
@@ -89,9 +90,11 @@ fn main() {
         .with(ForestLayer::default())
         .init();
 
+    let prover_inputs = vec![ProverInput::new(&air, Vec::new(), trace)];
     let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
-    let proof = prove::<_, Challenge, _>(&air, &[], input, challenger);
+    let proof = prove::<_, Challenge, _>(prover_inputs, challenger);
 
+    let verifier_inputs = vec![VerifierInput::new(&air, Vec::new())];
     let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
-    verify(&air, &[], &proof, challenger).unwrap();
+    verify(verifier_inputs, &proof, challenger).unwrap();
 }

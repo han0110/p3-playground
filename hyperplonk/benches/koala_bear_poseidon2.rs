@@ -2,7 +2,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 use p3_air::{Air, AirBuilder, BaseAir, BaseAirWithPublicValues};
 use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_field::extension::BinomialExtensionField;
-use p3_hyperplonk::prove;
+use p3_hyperplonk::{ProverInput, prove};
 use p3_keccak::Keccak256Hash;
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_poseidon2_air::{RoundConstants, generate_trace_rows, num_cols};
@@ -35,15 +35,15 @@ pub struct Poseidon2Air(
     >,
 );
 
-impl<F> BaseAir<F> for Poseidon2Air {
+impl<F> BaseAir<F> for &Poseidon2Air {
     fn width(&self) -> usize {
         num_cols::<WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>()
     }
 }
 
-impl<F> BaseAirWithPublicValues<F> for Poseidon2Air {}
+impl<F> BaseAirWithPublicValues<F> for &Poseidon2Air {}
 
-impl<AB: AirBuilder<F = Val>> Air<AB> for Poseidon2Air {
+impl<AB: AirBuilder<F = Val>> Air<AB> for &Poseidon2Air {
     #[inline]
     fn eval(&self, builder: &mut AB) {
         self.0.eval(builder);
@@ -63,7 +63,7 @@ fn bench(c: &mut Criterion) {
             BenchmarkId::from_parameter(num_vars),
             &num_vars,
             |b, num_vars| {
-                let input = generate_trace_rows::<
+                let trace = generate_trace_rows::<
                     _,
                     LinearLayers,
                     WIDTH,
@@ -76,10 +76,11 @@ fn bench(c: &mut Criterion) {
                     &round_constants,
                 );
                 b.iter_batched(
-                    || input.clone(),
-                    |input| {
+                    || trace.clone(),
+                    |trace| {
+                        let prover_inputs = vec![ProverInput::new(&air, Vec::new(), trace.clone())];
                         let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
-                        prove::<_, Challenge, _>(&air, &[], input, challenger);
+                        prove::<_, Challenge, _>(prover_inputs, challenger);
                     },
                     BatchSize::LargeInput,
                 );

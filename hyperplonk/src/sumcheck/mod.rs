@@ -38,12 +38,10 @@ impl<Challenge: Field> RoundPoly<Challenge> {
         horner(&self.0, z_i)
     }
 
-    pub(crate) fn iter_compressed(&self) -> impl Iterator<Item = Challenge> {
-        chain![[self.0[0]], self.0[2..].iter().copied()]
-    }
-
     pub(crate) fn into_compressed(mut self) -> CompressedRoundPoly<Challenge> {
-        self.0.remove(1);
+        if self.0.len() > 1 {
+            self.0.remove(1);
+        }
         CompressedRoundPoly(self.0)
     }
 }
@@ -59,7 +57,7 @@ pub(crate) struct EqHelper<'a, Val: Field, Challenge: ExtensionField<Val>> {
 impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge> {
     pub(crate) fn new(r: &'a [Challenge]) -> Self {
         let evals = {
-            let r = &r[1..];
+            let r = &r[min(r.len(), 1)..];
             let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
             let (r_lo, r_hi) = r.split_at(r.len().saturating_sub(log_packing_width));
             let mut evals_hi = eq_poly(r_hi, Challenge::ONE);
@@ -70,7 +68,7 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge
             batch_multiplicative_inverse(&r.iter().map(|r_i| Challenge::ONE - *r_i).collect_vec());
         let correcting_factors = chain![
             [Challenge::ONE],
-            one_minus_r_inv[1..]
+            one_minus_r_inv[min(r.len(), 1)..]
                 .iter()
                 .scan(Challenge::ONE, |product, value| {
                     *product *= *value;

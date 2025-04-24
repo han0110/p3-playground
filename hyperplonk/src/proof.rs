@@ -5,20 +5,20 @@ use p3_field::Field;
 
 use crate::horner;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Proof<Challenge> {
     // pub fractional_sumcheck: FractionalSumcheckProof<Challenge>,
-    pub zero_sumcheck: SumcheckProof<Challenge>,
+    pub zero_sumcheck: BatchSumcheckProof<Challenge>,
 }
 
-#[derive(Debug)]
-pub struct SumcheckProof<Challenge> {
-    pub num_vars: usize,
+#[derive(Clone, Debug)]
+pub struct BatchSumcheckProof<Challenge> {
+    pub num_vars: Vec<usize>,
     pub compressed_round_polys: Vec<CompressedRoundPoly<Challenge>>,
-    pub evals: Vec<Challenge>,
+    pub evals: Vec<Vec<Challenge>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CompressedRoundPoly<Challenge>(pub Vec<Challenge>);
 
 impl<Challenge: Field> CompressedRoundPoly<Challenge> {
