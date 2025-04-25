@@ -245,7 +245,6 @@ enum Witness<Val: Field, Challenge: ExtensionField<Val>> {
         input: RowMajorMatrix<Challenge::ExtensionPacking>,
         quotient: Quotient<Val, Challenge, Challenge::ExtensionPacking>,
     },
-
     Extension {
         input: RowMajorMatrix<Challenge>,
     },
@@ -255,6 +254,21 @@ impl<Val: Field, Challenge: ExtensionField<Val>> Default for Witness<Val, Challe
     fn default() -> Self {
         Self::Extension {
             input: RowMajorMatrix::new(Vec::new(), 0),
+        }
+    }
+}
+
+impl<Val: Field, Challenge: ExtensionField<Val>> Witness<Val, Challenge> {
+    fn num_vars(&self) -> usize {
+        match self {
+            Self::Packing { input, eq_z, .. } => {
+                log2_strict_usize(input.height()) + log2_strict_usize(Val::Packing::WIDTH)
+                    - log2_strict_usize(eq_z.len())
+            }
+            Self::ExtensionPacking { input, .. } => {
+                log2_strict_usize(input.height()) + log2_strict_usize(Val::Packing::WIDTH)
+            }
+            Self::Extension { input } => log2_strict_usize(input.height()),
         }
     }
 }
@@ -368,7 +382,7 @@ where
         self.round_poly.clone().into_compressed()
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(num_vars = %self.witness.num_vars()))]
     fn compute_first_round_poly(
         &mut self,
         round: usize,
@@ -419,7 +433,7 @@ where
         RoundPoly::from_evals(chain![[Challenge::ZERO; 2], extra_evals])
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(num_vars = %self.witness.num_vars()))]
     fn compute_round_poly_algo_2(
         &mut self,
         round: usize,
@@ -488,7 +502,7 @@ where
         RoundPoly::from_evals(chain![[eval_0, eval_1], extra_evals])
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(num_vars = %self.witness.num_vars()))]
     fn compute_round_poly_algo_1(
         &mut self,
         round: usize,
@@ -543,7 +557,7 @@ where
         RoundPoly::from_evals(chain![[eval_0, eval_1], extra_evals])
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(num_vars = %self.witness.num_vars()))]
     fn compute_round_poly_algo_1_small(
         &mut self,
         round: usize,
