@@ -15,7 +15,9 @@ pub enum SymbolicExpression<F> {
     Variable(SymbolicVariable<F>),
     IsFirstRow,
     IsLastRow,
-    IsTransition,
+    IsTransition {
+        degree: usize,
+    },
     Constant(F),
     Add {
         x: Rc<Self>,
@@ -42,7 +44,8 @@ impl<F> SymbolicExpression<F> {
     pub const fn degree_multiple(&self) -> usize {
         match self {
             Self::Variable(v) => v.degree_multiple(),
-            Self::IsFirstRow | Self::IsLastRow | Self::IsTransition => 1,
+            Self::IsFirstRow | Self::IsLastRow => 1,
+            Self::IsTransition { degree } => *degree,
             Self::Constant(_) => 0,
             Self::Add {
                 degree_multiple, ..
@@ -304,10 +307,11 @@ pub struct SymbolicAirBuilder<F: Field> {
     main: RowMajorMatrix<SymbolicVariable<F>>,
     public_values: Vec<SymbolicVariable<F>>,
     constraints: Vec<SymbolicExpression<F>>,
+    is_transition_degree: usize,
 }
 
 impl<F: Field> SymbolicAirBuilder<F> {
-    fn new(width: usize, num_public_values: usize) -> Self {
+    fn new(width: usize, num_public_values: usize, is_transition_degree: usize) -> Self {
         let main_values = [0, 1]
             .into_iter()
             .flat_map(|offset| {
@@ -321,6 +325,7 @@ impl<F: Field> SymbolicAirBuilder<F> {
             main: RowMajorMatrix::new(main_values, width),
             public_values,
             constraints: Vec::new(),
+            is_transition_degree,
         }
     }
 }
@@ -349,7 +354,9 @@ impl<F: Field> AirBuilder for SymbolicAirBuilder<F> {
 
     fn is_transition_window(&self, size: usize) -> Self::Expr {
         if size == 2 {
-            SymbolicExpression::IsTransition
+            SymbolicExpression::IsTransition {
+                degree: self.is_transition_degree,
+            }
         } else {
             panic!("uni-stark only supports a window size of 2")
         }
@@ -370,7 +377,8 @@ impl<F: Field> AirBuilderWithPublicValues for SymbolicAirBuilder<F> {
 #[derive(Debug, Clone, Copy)]
 pub struct AirMeta {
     pub width: usize,
-    pub degree: usize,
+    pub univariate_degree: usize,
+    pub multivariate_degree: usize,
     pub constraint_count: usize,
     pub public_value_count: usize,
 }
@@ -383,14 +391,21 @@ impl AirMeta {
     {
         let width = air.width();
         let public_value_count = air.num_public_values();
-        let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values());
+        let univariate_degree = {
+            let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values(), 0);
+            air.eval(&mut builder);
+            max_degree(&builder.constraints)
+        };
+        let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values(), 1);
         air.eval(&mut builder);
-        let degree = max_degree(&builder.constraints);
-        assert!(degree >= 2, "Not yet supported");
+        let multivariate_degree = max_degree(&builder.constraints);
+        assert!(univariate_degree >= 2, "Not yet supported");
+        assert!(multivariate_degree >= 2, "Not yet supported");
         let constraint_count = builder.constraints.len();
         Self {
             width,
-            degree,
+            univariate_degree,
+            multivariate_degree,
             constraint_count,
             public_value_count,
         }

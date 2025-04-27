@@ -45,15 +45,6 @@ impl<F> BaseAirWithPublicValues<F> for MyAir {
 impl<AB: AirBuilderWithPublicValues> Air<AB> for MyAir {
     #[inline]
     fn eval(&self, builder: &mut AB) {
-        let is_first_row = builder.is_first_row();
-        builder.when_first_row().assert_one(is_first_row);
-
-        let is_last_row = builder.is_last_row();
-        builder.when_last_row().assert_one(is_last_row);
-
-        let is_transition = builder.is_transition();
-        builder.when_transition().assert_one(is_transition);
-
         let grand_output = builder.public_values()[0];
         let main = builder.main();
         let local = main.row_slice(0);
@@ -153,10 +144,11 @@ fn single_product() {
 #[test]
 fn multiple_mixed() {
     let mut rng = StdRng::from_os_rng();
-    for n in 2..10 {
+    for _ in 0..100 {
+        let n = rng.random_range(1..10);
         run((0..n)
             .map(|_| {
-                let num_vars = rng.random_range(0..10);
+                let num_vars = rng.random_range(0..12);
                 let width = rng.random_range(2..5);
                 let air = match rng.random_bool(0.5) {
                     false => MyAir::GrandSum { width },

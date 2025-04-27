@@ -4,12 +4,12 @@ use core::mem::swap;
 
 use itertools::{Itertools, enumerate, izip, zip_eq};
 use p3_field::{
-    Algebra, BasedVectorSpace, ExtensionField, Field, PackedFieldExtension, PackedValue,
-    PrimeCharacteristicRing,
+    Algebra, ExtensionField, Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing,
 };
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
+use p3_util::log2_strict_usize;
 use tracing::instrument;
 
 #[inline]
@@ -55,6 +55,13 @@ pub(crate) fn vander_mat_inv<F: Field>(points: impl IntoIterator<Item = F>) -> R
         poly_from_roots(col, &point_is, scalar);
     });
     mat.transpose()
+}
+
+pub fn eq_poly_packed<F: Field, E: ExtensionField<F>>(r: &[E]) -> Vec<E::ExtensionPacking> {
+    let log_packing_width = log2_strict_usize(F::Packing::WIDTH);
+    let (r_lo, r_hi) = r.split_at(r.len() - log_packing_width);
+    let eq_r_hi = eq_poly(r_hi, E::ONE);
+    eq_poly(r_lo, E::ExtensionPacking::from_ext_slice(&eq_r_hi))
 }
 
 #[instrument(level = "debug", skip_all, fields(dim = %r.len()))]
@@ -108,23 +115,6 @@ pub(crate) fn fix_var<
     )
 }
 
-pub(crate) fn unpack_row<Val: Field, Challenge: ExtensionField<Val>>(
-    row: &[Challenge::ExtensionPacking],
-) -> RowMajorMatrix<Challenge> {
-    let width = row.len();
-    RowMajorMatrix::new(
-        (0..width * Val::Packing::WIDTH)
-            .into_par_iter()
-            .map(|i| {
-                Challenge::from_basis_coefficients_fn(|j| {
-                    row[i % width].as_basis_coefficients_slice()[j].as_slice()[i / width]
-                })
-            })
-            .collect(),
-        width,
-    )
-}
-
 pub(crate) trait PackedExtensionValue<F: Field, E: ExtensionField<F, ExtensionPacking = Self>>:
     PackedFieldExtension<F, E> + Sync + Send
 {
@@ -152,6 +142,11 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
     #[inline]
     fn slice_assign_iter(&mut self, rhs: impl IntoIterator<Item = F>) {
         izip!(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs = rhs);
+    }
+
+    #[inline]
+    fn slice_scale(&mut self, scalar: F) {
+        self.as_mut().iter_mut().for_each(|lhs| *lhs *= scalar);
     }
 
     #[inline]

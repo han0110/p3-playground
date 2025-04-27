@@ -11,14 +11,15 @@ use p3_matrix::Matrix;
 use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
 
-use crate::{CompressedRoundPoly, eq_poly, horner, vander_mat_inv};
+use crate::{CompressedRoundPoly, RoundPoly, eq_poly, vander_mat_inv};
 
-mod zero_sumcheck;
+mod eval;
+mod regular;
+mod univariate_skip;
 
-pub(crate) use zero_sumcheck::*;
-
-#[derive(Clone)]
-pub(crate) struct RoundPoly<Challenge>(pub(crate) Vec<Challenge>);
+pub(crate) use eval::*;
+pub(crate) use regular::*;
+pub(crate) use univariate_skip::*;
 
 impl<Challenge: Field> RoundPoly<Challenge> {
     fn from_evals<Val: Field>(evals: impl IntoIterator<Item = Challenge>) -> Self
@@ -32,10 +33,6 @@ impl<Challenge: Field> RoundPoly<Challenge> {
                 .map(|row| dot_product(cloned(&evals), row))
                 .collect(),
         )
-    }
-
-    fn subclaim(&self, z_i: Challenge) -> Challenge {
-        horner(&self.0, z_i)
     }
 
     pub(crate) fn into_compressed(mut self) -> CompressedRoundPoly<Challenge> {
@@ -85,7 +82,7 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge
         }
     }
 
-    fn evals_packed(
+    pub(crate) fn evals_packed(
         &self,
         round: usize,
     ) -> impl IndexedParallelIterator<Item = Challenge::ExtensionPacking> {

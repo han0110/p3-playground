@@ -10,7 +10,6 @@ use p3_poseidon2_air::{RoundConstants, generate_trace_rows, num_cols};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry};
 
@@ -81,9 +80,8 @@ fn main() {
         prove::<_, Challenge, _>(prover_inputs, challenger);
     }
 
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,p3_dft=warn"));
 
     Registry::default()
         .with(env_filter)

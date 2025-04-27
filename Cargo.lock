@@ -612,6 +612,8 @@ dependencies = [
  "itertools 0.14.0",
  "p3-air",
  "p3-challenger",
+ "p3-commit",
+ "p3-dft",
  "p3-field",
  "p3-keccak",
  "p3-koala-bear",
