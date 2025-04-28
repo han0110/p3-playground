@@ -396,12 +396,11 @@ impl AirMeta {
             air.eval(&mut builder);
             max_degree(&builder.constraints)
         };
-        let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values(), 1);
-        air.eval(&mut builder);
-        let multivariate_degree = max_degree(&builder.constraints);
-        assert!(univariate_degree >= 2, "Not yet supported");
-        assert!(multivariate_degree >= 2, "Not yet supported");
-        let constraint_count = builder.constraints.len();
+        let (multivariate_degree, constraint_count) = {
+            let mut builder = SymbolicAirBuilder::new(air.width(), air.num_public_values(), 1);
+            air.eval(&mut builder);
+            (max_degree(&builder.constraints), builder.constraints.len())
+        };
         Self {
             width,
             univariate_degree,

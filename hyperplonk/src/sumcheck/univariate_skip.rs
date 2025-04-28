@@ -12,14 +12,14 @@ use p3_field::{
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
-use p3_util::{log2_ceil_usize, log2_strict_usize};
+use p3_util::log2_ceil_usize;
 use tracing::{info_span, instrument};
 
 use crate::{
-    AirMeta, EvalSumcheckProver, FieldSlice, IsFirstRow, IsLastRow, IsTransition,
+    AirMeta, AirTrace, EvalSumcheckProver, FieldSlice, IsFirstRow, IsLastRow, IsTransition,
     PackedExtensionValue, ProverFolderGeneric, ProverFolderOnExtension,
     ProverFolderOnExtensionPacking, ProverFolderOnPacking, RegularSumcheckProver, RoundPoly,
-    Witness, eq_poly_packed, unpack_row, vec_add,
+    eq_poly_packed, vec_add,
 };
 
 pub(crate) struct UnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
@@ -27,7 +27,7 @@ pub(crate) struct UnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField
     air: &'a A,
     public_values: &'a [Val],
     alpha_powers: &'a [Challenge],
-    trace: RowMajorMatrix<Val::Packing>,
+    trace: AirTrace<Val, Challenge>,
     skip_rounds: usize,
     round_poly: RoundPoly<Challenge>,
 }
@@ -47,25 +47,7 @@ where
         skip_rounds: usize,
     ) -> Self {
         assert!(trace.height() >= Val::Packing::WIDTH << skip_rounds);
-        let trace = info_span!("pack trace local and next together").in_scope(|| {
-            let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
-            let width = meta.width;
-            let len = trace.values.len();
-            let packed_len = len >> log_packing_width;
-            RowMajorMatrix::new(
-                (0..2 * packed_len)
-                    .into_par_iter()
-                    .map(|i| {
-                        let row = (i / width).div_ceil(2);
-                        let col = i % width;
-                        Val::Packing::from_fn(|j| {
-                            trace.values[(row * width + col + j * packed_len) % len]
-                        })
-                    })
-                    .collect(),
-                2 * width,
-            )
-        });
+        let trace = AirTrace::new(trace);
         Self {
             meta,
             air,
@@ -77,16 +59,19 @@ where
         }
     }
 
-    #[instrument(skip_all, name = "compute univariate skip round poly", fields(dim = %self.dim()))]
+    #[instrument(skip_all, name = "compute univariate skip round poly", fields(log_h = %self.trace.log_height()))]
     pub(crate) fn compute_round_poly(&mut self, r: &[Challenge]) -> RoundPoly<Challenge> {
+        let AirTrace::Packing(trace) = &self.trace else {
+            unimplemented!()
+        };
+
         let round_poly = {
             let quotient_degree = self.meta.univariate_degree.saturating_sub(1);
             let added_bits = log2_ceil_usize(quotient_degree);
             let sels = domain(self.skip_rounds)
                 .selectors_on_coset(quotient_domain(self.skip_rounds, added_bits));
             let eq_r_packed = eq_poly_packed(r);
-            let quotient_values = self
-                .trace
+            let quotient_values = trace
                 .par_row_chunks(1 << self.skip_rounds)
                 .zip(&eq_r_packed)
                 .enumerate()
@@ -132,6 +117,7 @@ where
                     .collect(),
             )
         };
+
         self.round_poly = round_poly.clone();
         round_poly
     }
@@ -146,37 +132,13 @@ where
             + for<'t> Air<ProverFolderOnExtension<'t, Val, Challenge>>
             + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
     {
+        let claim = self.round_poly.subclaim(x) * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
+        let regular_rounds = self.trace.log_height() - self.skip_rounds;
         let trace = info_span!("fix univariate skip var").in_scope(|| {
             let lagrange_evals = lagrange_evals(self.skip_rounds, x);
-            let mut values = RowMajorMatrix::new(
-                vec![
-                    Challenge::ExtensionPacking::ZERO;
-                    self.trace.values.len() >> self.skip_rounds
-                ],
-                self.trace.width(),
-            );
-            values
-                .par_rows_mut()
-                .zip(self.trace.par_row_chunks(1 << self.skip_rounds))
-                .for_each(|(acc, trace)| {
-                    trace.rows().zip(&lagrange_evals).for_each(|(row, scalar)| {
-                        acc.slice_add_assign_scaled_iter(
-                            row,
-                            Challenge::ExtensionPacking::from(*scalar),
-                        );
-                    })
-                });
-            values
+            self.trace.fix_lo_scalars(&lagrange_evals)
         });
-        let regular_rounds =
-            log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH);
-        let witness = if trace.height() == 1 {
-            Witness::Extension(unpack_row(&trace.values))
-        } else {
-            Witness::ExtensionPacking(trace)
-        };
         let sels = selectors_at_point(self.skip_rounds, x);
-        let claim = self.round_poly.subclaim(x) * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
         RegularSumcheckProver {
             air: self.air,
             meta: self.meta,
@@ -184,11 +146,11 @@ where
             alpha_powers: self.alpha_powers,
             starting_round: max_regular_rounds - regular_rounds,
             claim,
-            round_poly: Default::default(),
-            witness,
+            trace,
             is_first_row: IsFirstRow(sels.is_first_row),
             is_last_row: IsLastRow(sels.is_last_row),
             is_transition: IsTransition(sels.is_transition),
+            round_poly: Default::default(),
         }
     }
 
@@ -201,23 +163,9 @@ where
         max_skip_rounds: usize,
     ) -> EvalSumcheckProver<'b, Challenge> {
         let claim = dot_product(cloned(evals), cloned(gamma_powers));
-        let trace = info_span!("fix high vars").in_scope(|| {
-            let eq_z_packed = eq_poly_packed(z);
-            RowMajorMatrix::new(
-                (0..self.trace.width() << self.skip_rounds)
-                    .into_par_iter()
-                    .map(|i| {
-                        (i..self.trace.values.len())
-                            .into_par_iter()
-                            .step_by(self.trace.width() << self.skip_rounds)
-                            .zip(&eq_z_packed)
-                            .map(|(idx, scalar)| *scalar * self.trace.values[idx])
-                            .sum::<Challenge::ExtensionPacking>()
-                            .ext_sum()
-                    })
-                    .collect(),
-                self.trace.width(),
-            )
+        let trace = info_span!("fix high vars").in_scope(|| match self.trace.fix_hi_vars(z) {
+            AirTrace::Extension(trace) => trace,
+            _ => unimplemented!(),
         });
         let weight = lagrange_evals(self.skip_rounds, x);
         EvalSumcheckProver {
@@ -228,10 +176,6 @@ where
             starting_round: max_skip_rounds - self.skip_rounds,
             round_poly: Default::default(),
         }
-    }
-
-    fn dim(&self) -> usize {
-        log2_strict_usize(self.trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
     }
 }
 

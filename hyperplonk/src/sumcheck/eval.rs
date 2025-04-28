@@ -1,15 +1,15 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use itertools::{Itertools, chain, cloned, izip};
-use p3_field::{Field, dot_product};
+use itertools::cloned;
+use p3_field::{Field, FieldArray, dot_product};
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
 use tracing::instrument;
 
-use crate::{CompressedRoundPoly, FieldSlice, RoundPoly, fix_var, vec_add};
+use crate::{CompressedRoundPoly, RoundPoly, fix_var};
 
 pub(crate) struct EvalSumcheckProver<'a, Challenge> {
     pub(crate) claim: Challenge,
@@ -21,43 +21,30 @@ pub(crate) struct EvalSumcheckProver<'a, Challenge> {
 }
 
 impl<Challenge: Field> EvalSumcheckProver<'_, Challenge> {
-    #[instrument(skip_all, name = "compute eval round poly", fields(dim = %self.dim()))]
+    #[instrument(skip_all, name = "compute eval round poly", fields(log_h = %self.log_height()))]
     pub(crate) fn compute_round_poly(&mut self, round: usize) -> CompressedRoundPoly<Challenge> {
         if round < self.starting_round {
             return CompressedRoundPoly::default();
         }
 
-        let mut extra_evals = self
+        let FieldArray([coeff_0, coeff_2]) = self
             .trace
             .par_row_chunks(2)
             .zip(self.weight.par_chunks(2))
-            .par_fold_reduce(
-                || vec![Challenge::ZERO; 2],
-                |mut sum, (main, weight)| {
-                    let lo = main.row(0);
-                    let hi = main.row(1);
-                    let mut eval = hi.collect_vec();
-                    let diff = izip!(&eval, lo).map(|(hi, lo)| *hi - lo).collect_vec();
-                    let mut weight_eval = weight[1];
-                    let weight_diff = weight[1] - weight[0];
-                    sum.iter_mut().enumerate().for_each(|(d, sum)| {
-                        if d > 0 {
-                            eval.slice_add_assign(&diff);
-                            weight_eval += weight_diff;
-                        }
-                        *sum += dot_product::<Challenge, _, _>(
-                            cloned(self.gamma_powers),
-                            cloned(&eval),
-                        ) * weight_eval;
-                    });
-                    sum
-                },
-                vec_add,
-            )
-            .into_iter();
-        let eval_1 = extra_evals.next().unwrap();
-        let eval_0 = self.claim - eval_1;
-        let round_poly = RoundPoly::from_evals(chain![[eval_0, eval_1], extra_evals]);
+            .map(|(main, weight)| {
+                let lo = dot_product::<Challenge, _, _>(cloned(self.gamma_powers), main.row(0));
+                let hi = dot_product::<Challenge, _, _>(cloned(self.gamma_powers), main.row(1));
+                let weight_lo = weight[0];
+                let weight_hi = weight[1];
+                FieldArray([lo * weight_lo, (hi - lo) * (weight_hi - weight_lo)])
+            })
+            .sum();
+        let coeff_1 = {
+            let eval_1 = self.claim - coeff_0;
+            eval_1 - coeff_0 - coeff_2
+        };
+
+        let round_poly = RoundPoly(vec![coeff_0, coeff_1, coeff_2]);
         self.round_poly = round_poly.clone();
         round_poly.into_compressed()
     }
@@ -76,7 +63,7 @@ impl<Challenge: Field> EvalSumcheckProver<'_, Challenge> {
         self.trace.values
     }
 
-    fn dim(&self) -> usize {
+    fn log_height(&self) -> usize {
         log2_strict_usize(self.trace.height())
     }
 }

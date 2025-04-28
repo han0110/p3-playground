@@ -8,15 +8,15 @@ use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing,
 };
 use p3_matrix::Matrix;
-use p3_matrix::dense::{DenseMatrix, RowMajorMatrix, RowMajorMatrixView};
+use p3_matrix::dense::{DenseMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
-use tracing::{info_span, instrument};
+use tracing::instrument;
 
 use crate::{
-    AirMeta, CompressedRoundPoly, EqHelper, ExtensionPacking, FieldSlice, PackedExtensionValue,
-    ProverFolderGeneric, ProverFolderOnExtension, ProverFolderOnExtensionPacking,
-    ProverFolderOnPacking, RoundPoly, fix_var, vec_add,
+    AirMeta, AirTrace, CompressedRoundPoly, EqHelper, ExtensionPacking, FieldSlice,
+    PackedExtensionValue, ProverFolderGeneric, ProverFolderOnExtension,
+    ProverFolderOnExtensionPacking, ProverFolderOnPacking, RoundPoly, vec_add,
 };
 
 pub(crate) struct RegularSumcheckProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
@@ -24,7 +24,7 @@ pub(crate) struct RegularSumcheckProver<'a, Val: Field, Challenge: ExtensionFiel
     pub(crate) air: &'a A,
     pub(crate) public_values: &'a [Val],
     pub(crate) claim: Challenge,
-    pub(crate) witness: Witness<Val, Challenge>,
+    pub(crate) trace: AirTrace<Val, Challenge>,
     pub(crate) alpha_powers: &'a [Challenge],
     pub(crate) starting_round: usize,
     pub(crate) is_first_row: IsFirstRow<Challenge>,
@@ -49,53 +49,15 @@ where
         alpha_powers: &'a [Challenge],
         max_regular_rounds: usize,
     ) -> Self {
-        let width = meta.width;
-        let height = trace.height();
-        let log_height = log2_strict_usize(height);
-        let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
-        let witness = if log_height > log_packing_width {
-            let trace = info_span!("pack trace local and next together").in_scope(|| {
-                let len = trace.values.len();
-                let packed_len = len >> log_packing_width;
-                RowMajorMatrix::new(
-                    (0..2 * packed_len)
-                        .into_par_iter()
-                        .map(|i| {
-                            let row = (i / width).div_ceil(2);
-                            let col = i % width;
-                            Val::Packing::from_fn(|j| {
-                                trace.values[(row * width + col + j * packed_len) % len]
-                            })
-                        })
-                        .collect(),
-                    2 * width,
-                )
-            });
-            Witness::Packing(trace)
-        } else {
-            let local = trace.values.par_chunks(width);
-            let next = trace.values[width..]
-                .par_chunks(width)
-                .chain([&trace.values[..width]]);
-            let trace = RowMajorMatrix::new(
-                local
-                    .zip(next)
-                    .flat_map(|(local, next)| local.par_iter().chain(next))
-                    .copied()
-                    .map(Challenge::from)
-                    .collect(),
-                2 * width,
-            );
-            Witness::Extension(trace)
-        };
+        let starting_round = max_regular_rounds - log2_strict_usize(trace.height());
         Self {
             air,
             meta,
             public_values,
             claim,
-            witness,
+            trace: AirTrace::new(trace),
             alpha_powers,
-            starting_round: max_regular_rounds - log_height,
+            starting_round,
             is_first_row: IsFirstRow(Challenge::ONE),
             is_last_row: IsLastRow(Challenge::ONE),
             is_transition: IsTransition(Challenge::ZERO),
@@ -112,12 +74,12 @@ where
             return CompressedRoundPoly::default();
         }
 
-        let round_poly = match &mut self.witness {
-            Witness::Packing(..) => self.compute_eq_weighted_round_poly_packing(round, eq_helper),
-            Witness::ExtensionPacking(..) => {
+        let round_poly = match &mut self.trace {
+            AirTrace::Packing(_) => self.compute_eq_weighted_round_poly_packing(round, eq_helper),
+            AirTrace::ExtensionPacking(_) => {
                 self.compute_eq_weighted_round_poly_extension_packing(round, eq_helper)
             }
-            Witness::Extension(..) => {
+            AirTrace::Extension(_) => {
                 self.compute_eq_weighted_round_poly_extension(round, eq_helper)
             }
         };
@@ -125,13 +87,13 @@ where
         round_poly.into_compressed()
     }
 
-    #[instrument(skip_all, name = "compute eq weighted round poly (packing)", fields(dim = %self.witness.dim()))]
+    #[instrument(skip_all, name = "compute eq weighted round poly (packing)", fields(log_h = %self.trace.log_height()))]
     fn compute_eq_weighted_round_poly_packing(
         &mut self,
         round: usize,
         eq_helper: &EqHelper<Val, Challenge>,
     ) -> RoundPoly<Challenge> {
-        let Witness::Packing(trace) = &mut self.witness else {
+        let AirTrace::Packing(trace) = &mut self.trace else {
             unreachable!()
         };
 
@@ -181,13 +143,13 @@ where
         RoundPoly::from_evals(chain![[eval_0, eval_1], extra_evals])
     }
 
-    #[instrument(skip_all, name = "compute eq weighted round poly (ext packing)", fields(dim = %self.witness.dim()))]
+    #[instrument(skip_all, name = "compute eq weighted round poly (ext packing)", fields(log_h = %self.trace.log_height()))]
     fn compute_eq_weighted_round_poly_extension_packing(
         &mut self,
         round: usize,
         eq_helper: &EqHelper<Val, Challenge>,
     ) -> RoundPoly<Challenge> {
-        let Witness::ExtensionPacking(trace) = &mut self.witness else {
+        let AirTrace::ExtensionPacking(trace) = &mut self.trace else {
             unreachable!()
         };
 
@@ -237,13 +199,13 @@ where
         RoundPoly::from_evals(chain![[eval_0, eval_1], extra_evals])
     }
 
-    #[instrument(skip_all, name = "compute eq weighted round poly (ext)", fields(dim = %self.witness.dim()))]
+    #[instrument(skip_all, name = "compute eq weighted round poly (ext)", fields(log_h = %self.trace.log_height()))]
     fn compute_eq_weighted_round_poly_extension(
         &mut self,
         round: usize,
         eq_helper: &EqHelper<Val, Challenge>,
     ) -> RoundPoly<Challenge> {
-        let Witness::Extension(trace) = &mut self.witness else {
+        let AirTrace::Extension(trace) = &mut self.trace else {
             unreachable!()
         };
 
@@ -297,35 +259,14 @@ where
         }
 
         self.claim = self.round_poly.subclaim(z_i);
-        self.witness = match &self.witness {
-            Witness::Packing(trace) => {
-                let trace = fix_var(trace.as_view(), z_i.into());
-                if trace.height() == 1 {
-                    Witness::Extension(unpack_row(&trace.values))
-                } else {
-                    Witness::ExtensionPacking(trace)
-                }
-            }
-            Witness::ExtensionPacking(trace) => {
-                let trace = fix_var(trace.as_view(), z_i.into());
-                if trace.height() == 1 {
-                    Witness::Extension(unpack_row(&trace.values))
-                } else {
-                    Witness::ExtensionPacking(trace)
-                }
-            }
-            Witness::Extension(trace) => {
-                let trace = fix_var(trace.as_view(), z_i);
-                Witness::Extension(trace)
-            }
-        };
-        self.is_first_row.fix_var(z_i);
-        self.is_last_row.fix_var(z_i);
-        self.is_transition.fix_var(z_i);
+        self.trace = self.trace.fix_var(z_i);
+        self.is_first_row = self.is_first_row.fix_var(z_i);
+        self.is_last_row = self.is_last_row.fix_var(z_i);
+        self.is_transition = self.is_transition.fix_var(z_i);
     }
 
     pub(crate) fn into_evals(self) -> Vec<Challenge> {
-        let Witness::Extension(trace) = self.witness else {
+        let AirTrace::Extension(trace) = self.trace else {
             unreachable!()
         };
         trace.values
@@ -431,10 +372,12 @@ impl<Val: Field, Challenge: ExtensionField<Val>>
 pub(crate) struct IsFirstRow<Challenge>(pub(crate) Challenge);
 
 impl<Challenge: Field> IsFirstRow<Challenge> {
-    fn fix_var(&mut self, z_i: Challenge) {
-        self.0 *= Challenge::ONE - z_i
+    #[must_use]
+    fn fix_var(&self, z_i: Challenge) -> Self {
+        Self(self.0 * (Challenge::ONE - z_i))
     }
 
+    #[inline]
     fn eval_packed<Val: Field>(&self) -> Challenge::ExtensionPacking
     where
         Challenge: ExtensionField<Val>,
@@ -452,10 +395,12 @@ impl<Challenge: Field> IsFirstRow<Challenge> {
 pub(crate) struct IsLastRow<Challenge>(pub(crate) Challenge);
 
 impl<Challenge: Field> IsLastRow<Challenge> {
-    fn fix_var(&mut self, z_i: Challenge) {
-        self.0 *= z_i
+    #[must_use]
+    fn fix_var(&self, z_i: Challenge) -> Self {
+        Self(self.0 * z_i)
     }
 
+    #[inline]
     fn eval_packed<Val: Field>(&self) -> Challenge::ExtensionPacking
     where
         Challenge: ExtensionField<Val>,
@@ -473,10 +418,12 @@ impl<Challenge: Field> IsLastRow<Challenge> {
 pub(crate) struct IsTransition<Challenge>(pub(crate) Challenge);
 
 impl<Challenge: Field> IsTransition<Challenge> {
-    fn fix_var(&mut self, z_i: Challenge) {
-        self.0 = (self.0 - Challenge::ONE) * z_i + Challenge::ONE
+    #[must_use]
+    fn fix_var(&self, z_i: Challenge) -> Self {
+        Self((self.0 - Challenge::ONE) * z_i + Challenge::ONE)
     }
 
+    #[inline]
     fn eval_packed<Val: Field>(&self) -> Challenge::ExtensionPacking
     where
         Challenge: ExtensionField<Val>,
@@ -493,41 +440,4 @@ impl<Challenge: Field> IsTransition<Challenge> {
             })
         })
     }
-}
-
-pub(crate) enum Witness<Val: Field, Challenge: ExtensionField<Val>> {
-    Packing(RowMajorMatrix<Val::Packing>),
-    ExtensionPacking(RowMajorMatrix<Challenge::ExtensionPacking>),
-    Extension(RowMajorMatrix<Challenge>),
-}
-
-impl<Val: Field, Challenge: ExtensionField<Val>> Witness<Val, Challenge> {
-    fn dim(&self) -> usize {
-        match self {
-            Self::Packing(trace) => {
-                log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
-            }
-            Self::ExtensionPacking(trace) => {
-                log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
-            }
-            Self::Extension(trace) => log2_strict_usize(trace.height()),
-        }
-    }
-}
-
-pub(crate) fn unpack_row<Val: Field, Challenge: ExtensionField<Val>>(
-    row: &[Challenge::ExtensionPacking],
-) -> RowMajorMatrix<Challenge> {
-    let width = row.len();
-    RowMajorMatrix::new(
-        (0..width * Val::Packing::WIDTH)
-            .into_par_iter()
-            .map(|i| {
-                Challenge::from_basis_coefficients_fn(|j| {
-                    row[i % width].as_basis_coefficients_slice()[j].as_slice()[i / width]
-                })
-            })
-            .collect(),
-        width,
-    )
 }

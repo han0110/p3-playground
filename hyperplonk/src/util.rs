@@ -1,8 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::mem::swap;
 
-use itertools::{Itertools, enumerate, izip, zip_eq};
+use itertools::{enumerate, izip, rev, zip_eq};
 use p3_field::{
     Algebra, ExtensionField, Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing,
 };
@@ -12,59 +11,24 @@ use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
 use tracing::instrument;
 
-#[inline]
-pub(crate) fn vec_add<F: Copy + PrimeCharacteristicRing>(mut lhs: Vec<F>, rhs: Vec<F>) -> Vec<F> {
-    lhs.slice_add_assign(&rhs);
-    lhs
-}
-
 pub(crate) fn horner<'a, F: Field>(
     coeffs: impl IntoIterator<IntoIter: DoubleEndedIterator, Item = &'a F>,
     x: F,
 ) -> F {
-    coeffs
-        .into_iter()
-        .copied()
-        .rev()
+    rev(coeffs.into_iter().copied())
         .reduce(|acc, coeff| acc * x + coeff)
         .unwrap_or_default()
 }
 
-pub(crate) fn vander_mat_inv<F: Field>(points: impl IntoIterator<Item = F>) -> RowMajorMatrix<F> {
-    let points = points.into_iter().map_into().collect_vec();
-    assert!(!points.is_empty());
-
-    let poly_from_roots = |poly: &mut [F], roots: &[F], scalar: F| {
-        *poly.last_mut().unwrap() = scalar;
-        izip!(2.., roots).for_each(|(len, root)| {
-            let mut tmp = scalar;
-            (0..poly.len() - 1).rev().take(len).for_each(|idx| {
-                tmp = poly[idx] - tmp * *root;
-                swap(&mut tmp, &mut poly[idx])
-            })
-        });
-    };
-
-    let mut mat = RowMajorMatrix::new(F::zero_vec(points.len() * points.len()), points.len());
-    izip!(mat.rows_mut(), 0.., &points).for_each(|(col, j, point_j)| {
-        let point_is = izip!(0.., &points)
-            .filter(|(i, _)| *i != j)
-            .map(|(_, point_i)| *point_i)
-            .collect_vec();
-        let scalar = F::product(point_is.iter().map(|point_i| *point_j - *point_i)).inverse();
-        poly_from_roots(col, &point_is, scalar);
-    });
-    mat.transpose()
-}
-
-pub fn eq_poly_packed<F: Field, E: ExtensionField<F>>(r: &[E]) -> Vec<E::ExtensionPacking> {
+pub(crate) fn eq_poly_packed<F: Field, E: ExtensionField<F>>(r: &[E]) -> Vec<E::ExtensionPacking> {
     let log_packing_width = log2_strict_usize(F::Packing::WIDTH);
-    let (r_lo, r_hi) = r.split_at(r.len() - log_packing_width);
-    let eq_r_hi = eq_poly(r_hi, E::ONE);
+    let (r_lo, r_hi) = r.split_at(r.len().saturating_sub(log_packing_width));
+    let mut eq_r_hi = eq_poly(r_hi, E::ONE);
+    eq_r_hi.resize(F::Packing::WIDTH, E::ZERO);
     eq_poly(r_lo, E::ExtensionPacking::from_ext_slice(&eq_r_hi))
 }
 
-#[instrument(level = "debug", skip_all, fields(dim = %r.len()))]
+#[instrument(level = "debug", skip_all, fields(log_h = %r.len()))]
 pub fn eq_poly<F: Field, VarEF: Copy + Send + Sync + Algebra<F>>(
     r: &[F],
     scalar: VarEF,
@@ -94,14 +58,12 @@ pub fn eq_eval<'a, F: Field>(
     F::product(zip_eq(x, y).map(|(&x, &y)| (x * y).double() + F::ONE - x - y))
 }
 
-#[instrument(level = "debug", skip_all, fields(dim = %mat.height().ilog2()))]
-pub(crate) fn fix_var<
+#[instrument(level = "debug", skip_all, fields(log_h = %mat.height().ilog2()))]
+pub(crate) fn fix_var<F, EF>(mat: RowMajorMatrixView<F>, z_i: EF) -> RowMajorMatrix<EF>
+where
     F: Copy + Send + Sync + PrimeCharacteristicRing,
     EF: Copy + Send + Sync + Algebra<F>,
->(
-    mat: RowMajorMatrixView<F>,
-    z_i: EF,
-) -> RowMajorMatrix<EF> {
+{
     RowMajorMatrix::new(
         mat.par_row_chunks(2)
             .flat_map(|rows| {
@@ -188,3 +150,9 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
 }
 
 impl<F: Copy + PrimeCharacteristicRing> FieldSlice<F> for [F] {}
+
+#[inline]
+pub(crate) fn vec_add<F: Copy + PrimeCharacteristicRing>(mut lhs: Vec<F>, rhs: Vec<F>) -> Vec<F> {
+    lhs.slice_add_assign(&rhs);
+    lhs
+}
