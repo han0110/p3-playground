@@ -7,10 +7,10 @@ use itertools::Itertools;
 use p3_air::{Air, BaseAirWithPublicValues};
 use p3_field::{BasedVectorSpace, Field};
 use p3_util::log2_ceil_usize;
+use tracing::instrument;
 
 use crate::{
     Interaction, ProofPerAir, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression, Val,
-    get_symbolic_constraints, max_degree,
 };
 
 #[derive(Clone)]
@@ -203,4 +203,27 @@ fn interaction_chunks<F>(
             }
         });
     chunks
+}
+
+#[instrument(name = "evaluate constraints symbolically", skip_all, level = "debug")]
+fn get_symbolic_constraints<F, A>(
+    air: &A,
+    preprocessed_width: usize,
+    num_public_values: usize,
+) -> (
+    Vec<SymbolicExpression<F>>,
+    Vec<Interaction<SymbolicExpression<F>>>,
+)
+where
+    F: Field,
+    A: Air<SymbolicAirBuilder<F>>,
+{
+    let mut builder =
+        SymbolicAirBuilder::new(0, preprocessed_width, air.width(), num_public_values);
+    air.eval(&mut builder);
+    builder.into_symbolic_constraints()
+}
+
+fn max_degree<F>(exprs: &[SymbolicExpression<F>]) -> usize {
+    itertools::max(exprs.iter().map(SymbolicExpression::degree_multiple)).unwrap_or(0)
 }

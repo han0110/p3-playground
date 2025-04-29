@@ -14,7 +14,7 @@ use tracing::instrument;
 use crate::{InteractionAirBuilder, InteractionType, ProverInput};
 
 #[instrument(name = "check constraints", skip_all)]
-pub(crate) fn check_constraints<F, A>(prover_inputs: &[ProverInput<F, A>])
+pub fn check_constraints<F, A>(prover_inputs: &[ProverInput<F, A>])
 where
     F: Field,
     A: for<'a> Air<DebugConstraintBuilder<'a, F>>,
@@ -41,14 +41,14 @@ where
                     air_index,
                     row_index: i,
                     main,
-                    public_values: &input.inner.public_values,
+                    public_values: &input.public_values,
                     is_first_row: F::from_bool(i == 0),
                     is_last_row: F::from_bool(i == height - 1),
                     is_transition: F::from_bool(i != height - 1),
                     interactions: &mut interactions,
                 };
 
-                input.inner.air.eval(&mut builder);
+                input.air.eval(&mut builder);
             });
         });
 

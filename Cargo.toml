@@ -1,5 +1,5 @@
 [workspace]
-members = ["fri-ext", "hyperplonk", "uni-stark-ext"]
+members = ["air-ext", "fri-ext", "hyperplonk", "uni-stark-ext"]
 resolver = "2"
 
 [workspace.package]
@@ -49,3 +49,8 @@ p3-sha256 = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
 p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "b54856e" }
+
+p3-air-ext = { path = "./air-ext" }
+p3-fri-ext = { path = "./fri-ext" }
+p3-hyperplonk = { path = "./hyperplonk" }
+p3-uni-stark-ext = { path = "./uni-stark-ext" }

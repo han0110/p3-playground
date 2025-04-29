@@ -455,6 +455,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-air-ext"
+version = "0.1.0"
+dependencies = [
+ "hashbrown",
+ "itertools 0.14.0",
+ "p3-air",
+ "p3-field",
+ "p3-matrix",
+ "tracing",
+]
+
+[[package]]
 name = "p3-baby-bear"
 version = "0.1.0"
 source = "git+https://github.com/Plonky3/Plonky3?rev=b54856e#b54856e5b1da87b9511ba5977f98ee2e7b0b1963"
@@ -611,6 +623,7 @@ dependencies = [
  "criterion",
  "itertools 0.14.0",
  "p3-air",
+ "p3-air-ext",
  "p3-challenger",
  "p3-commit",
  "p3-dft",
@@ -805,9 +818,9 @@ dependencies = [
 name = "p3-uni-stark-ext"
 version = "0.1.0"
 dependencies = [
- "hashbrown",
  "itertools 0.14.0",
  "p3-air",
+ "p3-air-ext",
  "p3-baby-bear",
  "p3-challenger",
  "p3-circle",

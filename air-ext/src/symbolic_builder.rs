@@ -2,70 +2,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use itertools::{Itertools, chain};
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PairBuilder};
+use p3_air::{AirBuilder, AirBuilderWithPublicValues, PairBuilder};
 use p3_field::Field;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_util::log2_ceil_usize;
-use tracing::instrument;
 
 use crate::symbolic_expression::SymbolicExpression;
 use crate::symbolic_variable::SymbolicVariable;
 use crate::{Entry, Interaction, InteractionAirBuilder, InteractionType};
 
-#[instrument(name = "infer log of constraint degree", skip_all)]
-pub fn get_log_quotient_degree<F, A>(
-    air: &A,
-    preprocessed_width: usize,
-    num_public_values: usize,
-) -> usize
-where
-    F: Field,
-    A: Air<SymbolicAirBuilder<F>>,
-{
-    // We pad to at least degree 2, since a quotient argument doesn't make sense with smaller degrees.
-    let constraint_degree =
-        get_max_constraint_degree(air, preprocessed_width, num_public_values).max(2);
-
-    // The quotient's actual degree is approximately (max_constraint_degree - 1) n,
-    // where subtracting 1 comes from division by the vanishing polynomial.
-    // But we pad it to a power of two so that we can efficiently decompose the quotient.
-    log2_ceil_usize(constraint_degree - 1)
-}
-
-#[instrument(name = "infer constraint degree", skip_all, level = "debug")]
-pub fn get_max_constraint_degree<F, A>(
-    air: &A,
-    preprocessed_width: usize,
-    num_public_values: usize,
-) -> usize
-where
-    F: Field,
-    A: Air<SymbolicAirBuilder<F>>,
-{
-    max_degree(&get_symbolic_constraints(air, preprocessed_width, num_public_values).0)
-}
-
-#[instrument(name = "evaluate constraints symbolically", skip_all, level = "debug")]
-pub fn get_symbolic_constraints<F, A>(
-    air: &A,
-    preprocessed_width: usize,
-    num_public_values: usize,
-) -> (
-    Vec<SymbolicExpression<F>>,
-    Vec<Interaction<SymbolicExpression<F>>>,
-)
-where
-    F: Field,
-    A: Air<SymbolicAirBuilder<F>>,
-{
-    let mut builder = SymbolicAirBuilder::new(preprocessed_width, air.width(), num_public_values);
-    air.eval(&mut builder);
-    (builder.constraints, builder.interactions)
-}
-
 /// An `AirBuilder` for evaluating constraints symbolically, and recording them for later use.
 #[derive(Debug)]
 pub struct SymbolicAirBuilder<F: Field> {
+    is_transition_degree: usize,
     preprocessed: RowMajorMatrix<SymbolicVariable<F>>,
     main: RowMajorMatrix<SymbolicVariable<F>>,
     public_values: Vec<SymbolicVariable<F>>,
@@ -74,7 +22,12 @@ pub struct SymbolicAirBuilder<F: Field> {
 }
 
 impl<F: Field> SymbolicAirBuilder<F> {
-    pub(crate) fn new(preprocessed_width: usize, width: usize, num_public_values: usize) -> Self {
+    pub fn new(
+        is_transition_degree: usize,
+        preprocessed_width: usize,
+        width: usize,
+        num_public_values: usize,
+    ) -> Self {
         let prep_values = [0, 1]
             .into_iter()
             .flat_map(|offset| {
@@ -92,6 +45,7 @@ impl<F: Field> SymbolicAirBuilder<F> {
             .map(move |index| SymbolicVariable::new(Entry::Public, index))
             .collect();
         Self {
+            is_transition_degree,
             preprocessed: RowMajorMatrix::new(prep_values, preprocessed_width),
             main: RowMajorMatrix::new(main_values, width),
             public_values,
@@ -99,10 +53,15 @@ impl<F: Field> SymbolicAirBuilder<F> {
             interactions: vec![],
         }
     }
-}
 
-pub(crate) fn max_degree<F>(exprs: &[SymbolicExpression<F>]) -> usize {
-    itertools::max(exprs.iter().map(SymbolicExpression::degree_multiple)).unwrap_or(0)
+    pub fn into_symbolic_constraints(
+        self,
+    ) -> (
+        Vec<SymbolicExpression<F>>,
+        Vec<Interaction<SymbolicExpression<F>>>,
+    ) {
+        (self.constraints, self.interactions)
+    }
 }
 
 impl<F: Field> AirBuilder for SymbolicAirBuilder<F> {
@@ -125,7 +84,9 @@ impl<F: Field> AirBuilder for SymbolicAirBuilder<F> {
 
     fn is_transition_window(&self, size: usize) -> Self::Expr {
         if size == 2 {
-            SymbolicExpression::IsTransition
+            SymbolicExpression::IsTransition {
+                degree: self.is_transition_degree,
+            }
         } else {
             panic!("uni-stark only supports a window size of 2")
         }

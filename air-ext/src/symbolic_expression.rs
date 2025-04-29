@@ -14,7 +14,9 @@ pub enum SymbolicExpression<F> {
     Variable(SymbolicVariable<F>),
     IsFirstRow,
     IsLastRow,
-    IsTransition,
+    IsTransition {
+        degree: usize,
+    },
     Constant(F),
     Add {
         x: Rc<Self>,
@@ -43,7 +45,8 @@ impl<F> SymbolicExpression<F> {
         match self {
             Self::Variable(v) => v.degree_multiple(),
             Self::IsFirstRow | Self::IsLastRow => 1,
-            Self::IsTransition | Self::Constant(_) => 0,
+            Self::IsTransition { degree } => *degree,
+            Self::Constant(_) => 0,
             Self::Add {
                 degree_multiple, ..
             }
@@ -62,7 +65,7 @@ impl<F> SymbolicExpression<F> {
     pub fn has_selector(&self) -> bool {
         match self {
             Self::Variable(_) | Self::Constant(_) => false,
-            Self::IsFirstRow | Self::IsLastRow | Self::IsTransition => true,
+            Self::IsFirstRow | Self::IsLastRow | Self::IsTransition { .. } => true,
             Self::Neg { x, .. } => x.has_selector(),
             Self::Add { x, y, .. } | Self::Sub { x, y, .. } | Self::Mul { x, y, .. } => {
                 x.has_selector() || y.has_selector()

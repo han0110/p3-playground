@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::mem;
 
 use itertools::{Itertools, chain, izip};
-use p3_air::{Air, BaseAirWithPublicValues};
+use p3_air::Air;
 use p3_challenger::{CanObserve, CanSample, FieldChallenger};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -12,32 +12,9 @@ use p3_matrix::stack::VerticalPair;
 use tracing::instrument;
 
 use crate::{
-    PcsError, Proof, StarkGenericConfig, Val, VerifierConstraintFolder, VerifyingKey, eval_log_up,
+    PcsError, Proof, StarkGenericConfig, Val, VerifierConstraintFolder, VerifierInput,
+    VerifyingKey, eval_log_up,
 };
-
-#[derive(Clone, Debug)]
-pub struct VerifierInput<Val, A> {
-    pub(crate) air: A,
-    pub(crate) public_values: Vec<Val>,
-}
-
-impl<Val: Field, A> VerifierInput<Val, A> {
-    pub fn new(air: A, public_values: Vec<Val>) -> Self
-    where
-        A: BaseAirWithPublicValues<Val>,
-    {
-        assert_eq!(air.num_public_values(), public_values.len());
-        Self { air, public_values }
-    }
-
-    pub fn air(&self) -> &A {
-        &self.air
-    }
-
-    pub fn public_values(&self) -> &[Val] {
-        &self.public_values
-    }
-}
 
 #[instrument(skip_all)]
 pub fn verify<SC, A>(

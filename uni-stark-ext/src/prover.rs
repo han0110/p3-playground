@@ -1,14 +1,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
-use core::ops::Deref;
 
 use itertools::{Itertools, chain, izip};
-use p3_air::{Air, BaseAirWithPublicValues};
+use p3_air::Air;
 use p3_challenger::{CanObserve, CanSample, FieldChallenger};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
-    BasedVectorSpace, Field, PackedValue, PrimeCharacteristicRing, batch_multiplicative_inverse,
+    BasedVectorSpace, PackedValue, PrimeCharacteristicRing, batch_multiplicative_inverse,
 };
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
@@ -19,41 +18,15 @@ use tracing::{debug_span, info_span, instrument};
 
 use crate::{
     Commitments, Domain, OpenedValues, PackedChallenge, PackedVal, Proof, ProofPerAir,
-    ProverConstraintFolder, ProverInteractionFolder, ProvingKey, StarkGenericConfig, Val,
-    VerifierInput, eval_log_up,
+    ProverConstraintFolder, ProverInput, ProverInteractionFolder, ProvingKey, StarkGenericConfig,
+    Val, eval_log_up,
 };
-
-#[derive(Clone, Debug)]
-pub struct ProverInput<Val, A> {
-    pub(crate) inner: VerifierInput<Val, A>,
-    pub(crate) trace: RowMajorMatrix<Val>,
-}
-
-impl<Val, A> Deref for ProverInput<Val, A> {
-    type Target = VerifierInput<Val, A>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl<Val: Field, A> ProverInput<Val, A> {
-    pub fn new(air: A, public_values: Vec<Val>, trace: RowMajorMatrix<Val>) -> Self
-    where
-        A: BaseAirWithPublicValues<Val>,
-    {
-        Self {
-            inner: VerifierInput::new(air, public_values),
-            trace,
-        }
-    }
-}
 
 #[instrument(skip_all)]
 #[allow(clippy::multiple_bound_locations)] // cfg not supported in where clauses?
 pub fn prove<
     SC,
-    #[cfg(feature = "check-constraints")] A: for<'a> Air<crate::check_constraints::DebugConstraintBuilder<'a, Val<SC>>>,
+    #[cfg(feature = "check-constraints")] A: for<'a> Air<crate::DebugConstraintBuilder<'a, Val<SC>>>,
     #[cfg(not(feature = "check-constraints"))] A,
 >(
     config: &SC,
@@ -66,15 +39,13 @@ where
     A: for<'a> Air<ProverInteractionFolder<'a, SC>> + for<'a> Air<ProverConstraintFolder<'a, SC>>,
 {
     #[cfg(feature = "check-constraints")]
-    crate::check_constraints::check_constraints(&inputs);
+    crate::check_constraints(&inputs);
 
-    let (inputs, main_traces, log_degrees) = inputs
-        .into_iter()
-        .map(|input| {
-            let log_degree = log2_strict_usize(input.trace.height());
-            (input.inner, input.trace, log_degree)
-        })
-        .collect::<(Vec<_>, Vec<_>, Vec<_>)>();
+    let (inputs, main_traces) = inputs.into_iter().map_into().collect::<(Vec<_>, Vec<_>)>();
+    let log_degrees = main_traces
+        .iter()
+        .map(|trace| log2_strict_usize(trace.height()))
+        .collect_vec();
 
     let has_any_interaction = pk.has_any_interaction();
 
