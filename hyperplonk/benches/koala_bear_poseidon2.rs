@@ -74,6 +74,7 @@ fn bench(c: &mut Criterion) {
                 >(
                     (0..1 << num_vars).map(|_| rng.random()).collect(),
                     &round_constants,
+                    0,
                 );
                 b.iter_batched(
                     || trace.clone(),

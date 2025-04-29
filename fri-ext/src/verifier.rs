@@ -25,14 +25,17 @@ pub fn verify<G, Val, Challenge, M, Challenger>(
     config: &FriConfig<M>,
     proof: &FriProof<Challenge, M, Challenger::Witness, G::InputProof>,
     challenger: &mut Challenger,
-    open_input: impl Fn(usize, &G::InputProof) -> Result<Vec<(usize, Challenge)>, G::InputError>,
+    open_input: impl Fn(
+        usize,
+        &G::InputProof,
+    ) -> Result<Vec<(usize, Challenge)>, FriError<M::Error, G::InputError>>,
 ) -> Result<(), FriError<M::Error, G::InputError>>
 where
     Val: Field,
     Challenge: ExtensionField<Val> + TwoAdicField,
     M: Mmcs<Challenge>,
     Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<M::Commitment>,
-    G: FriGenericConfig<Challenge>,
+    G: FriGenericConfig<Val, Challenge>,
 {
     let betas: Vec<Challenge> = proof
         .commit_phase_commits
@@ -62,7 +65,7 @@ where
 
     for qp in &proof.query_proofs {
         let index = challenger.sample_bits(log_max_height + g.extra_query_index_bits());
-        let ro = open_input(index, &qp.input_proof).map_err(FriError::InputError)?;
+        let ro = open_input(index, &qp.input_proof)?;
 
         debug_assert!(
             ro.iter().tuple_windows().all(|((l, _), (r, _))| l > r),
@@ -113,20 +116,21 @@ type CommitStep<'a, F, M> = (
     &'a CommitPhaseProofStep<F, M>,
 );
 
-fn verify_query<'a, G, F, M>(
+fn verify_query<'a, G, F, EF, M>(
     g: &G,
     config: &FriConfig<M>,
     mut index: usize,
-    mut steps: impl Iterator<Item = CommitStep<'a, F, M>>,
-    reduced_openings: Vec<(usize, F)>,
+    mut steps: impl Iterator<Item = CommitStep<'a, EF, M>>,
+    reduced_openings: Vec<(usize, EF)>,
     log_max_height: usize,
-) -> Result<F, FriError<M::Error, G::InputError>>
+) -> Result<EF, FriError<M::Error, G::InputError>>
 where
     F: Field,
-    M: Mmcs<F> + 'a,
-    G: FriGenericConfig<F>,
+    EF: ExtensionField<F>,
+    M: Mmcs<EF> + 'a,
+    G: FriGenericConfig<F, EF>,
 {
-    let mut folded_eval = F::ZERO;
+    let mut folded_eval = EF::ZERO;
     let mut ro_iter = reduced_openings.into_iter().peekable();
 
     let mut log_folded_height = log_max_height;
@@ -201,26 +205,33 @@ where
         }
 
         folded_eval = folded_row.pop().unwrap();
-        assert!(folded_row.is_empty());
+
+        if !folded_row.is_empty() {
+            return Err(FriError::InvalidProofShape);
+        }
     }
 
-    debug_assert!(
-        index < config.blowup() * config.final_poly_len(),
-        "index was {}",
-        index,
-    );
-    debug_assert!(
-        ro_iter.next().is_none(),
-        "verifier reduced_openings were not in descending order?"
-    );
+    if ro_iter.next().is_some() {
+        return Err(FriError::InvalidProofShape);
+    }
+    if steps.next().is_some() {
+        return Err(FriError::InvalidProofShape);
+    }
 
     Ok(folded_eval)
 }
 
-fn fold_partial_row<G, F>(g: &G, index: usize, log_height: usize, beta: F, evals: Vec<F>) -> Vec<F>
+fn fold_partial_row<G, F, EF>(
+    g: &G,
+    index: usize,
+    log_height: usize,
+    beta: EF,
+    evals: Vec<EF>,
+) -> Vec<EF>
 where
-    G: FriGenericConfig<F>,
+    G: FriGenericConfig<F, EF>,
     F: Field,
+    EF: ExtensionField<F>,
 {
     let folded_matrix = RowMajorMatrix::new(evals, 2);
     folded_matrix

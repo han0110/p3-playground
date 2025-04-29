@@ -27,7 +27,7 @@ impl<F> BaseAir<F> for SendingAir {
 impl<AB: InteractionAirBuilder> Air<AB> for SendingAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let local = main.row_slice(0);
+        let local = main.row_slice(0).unwrap();
         if !AB::ONLY_INTERACTION {
             builder.assert_eq(local[0].into().square(), local[0].into().square());
         }
@@ -46,7 +46,7 @@ impl<F> BaseAir<F> for ReceivingAir {
 impl<AB: InteractionAirBuilder> Air<AB> for ReceivingAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let local = main.row_slice(0);
+        let local = main.row_slice(0).unwrap();
         if !AB::ONLY_INTERACTION {
             builder.assert_eq(local[0].into().square(), local[0].into().square());
         }
@@ -125,7 +125,7 @@ fn do_test(sending_trace: RowMajorMatrix<Val>, receiving_trace: RowMajorMatrix<V
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_config = create_test_fri_config(challenge_mmcs);
+    let fri_config = create_test_fri_config(challenge_mmcs, 0);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
     let config = MyConfig::new(pcs);
 

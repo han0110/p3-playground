@@ -1,6 +1,6 @@
 use core::iter::repeat_with;
 
-use itertools::{Itertools, chain};
+use itertools::{Itertools, chain, cloned};
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, BaseAirWithPublicValues};
 use p3_challenger::{FieldChallenger, HashChallenger, SerializingChallenger32};
 use p3_field::Field;
@@ -47,12 +47,12 @@ impl<AB: AirBuilderWithPublicValues> Air<AB> for MyAir {
     fn eval(&self, builder: &mut AB) {
         let grand_output = builder.public_values()[0];
         let main = builder.main();
-        let local = main.row_slice(0);
-        let next = main.row_slice(1);
+        let local = main.row_slice(0).unwrap();
+        let next = main.row_slice(1).unwrap();
 
         let output = match self {
-            Self::GrandSum { .. } => local.iter().copied().map_into().sum::<AB::Expr>(),
-            Self::GrandProduct { .. } => local.iter().copied().map_into().product::<AB::Expr>(),
+            Self::GrandSum { .. } => cloned(&*local).map_into().sum::<AB::Expr>(),
+            Self::GrandProduct { .. } => cloned(&*local).map_into().product::<AB::Expr>(),
         };
 
         builder.when_transition().assert_eq(output.clone(), next[0]);

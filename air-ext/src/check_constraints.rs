@@ -30,8 +30,8 @@ where
             (0..height).for_each(|i| {
                 let i_next = (i + 1) % height;
 
-                let local = input.trace.row_slice(i);
-                let next = input.trace.row_slice(i_next);
+                let local = input.trace.row_slice(i).unwrap();
+                let next = input.trace.row_slice(i_next).unwrap();
                 let main = VerticalPair::new(
                     RowMajorMatrixView::new_row(&*local),
                     RowMajorMatrixView::new_row(&*next),

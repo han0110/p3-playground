@@ -106,8 +106,8 @@ where
             .par_fold_reduce(
                 || vec![Challenge::ExtensionPacking::ZERO; self.meta.multivariate_degree],
                 |mut sum, (row, (main, eq_eval))| {
-                    let lo = main.row(0);
-                    let hi = main.row(1);
+                    let lo = main.row(0).unwrap();
+                    let hi = main.row(1).unwrap();
                     let mut state = EvalState::new(self.meta.width);
                     state.main_eval.slice_assign_iter(hi);
                     state.main_diff.slice_sub_iter(cloned(&state.main_eval), lo);
@@ -162,8 +162,8 @@ where
             .par_fold_reduce(
                 || vec![Challenge::ExtensionPacking::ZERO; self.meta.multivariate_degree],
                 |mut sum, (row, (main, eq_eval))| {
-                    let lo = main.row(0);
-                    let hi = main.row(1);
+                    let lo = main.row(0).unwrap();
+                    let hi = main.row(1).unwrap();
                     let mut state = EvalState::new(self.meta.width);
                     state.main_eval.slice_assign_iter(hi);
                     state.main_diff.slice_sub_iter(cloned(&state.main_eval), lo);
@@ -218,8 +218,8 @@ where
             .par_fold_reduce(
                 || vec![Challenge::ZERO; self.meta.multivariate_degree],
                 |mut sum, (row, (main, eq_eval))| {
-                    let lo = main.row(0);
-                    let hi = main.row(1);
+                    let lo = main.row(0).unwrap();
+                    let hi = main.row(1).unwrap();
                     let mut state = EvalState::new(self.meta.width);
                     state.main_eval.slice_assign_iter(hi);
                     state.main_diff.slice_sub_iter(cloned(&state.main_eval), lo);

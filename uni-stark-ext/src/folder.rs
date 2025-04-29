@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use core::iter::{Skip, Take};
 use core::ops::{Deref, Range};
 
 use itertools::izip;
@@ -273,25 +272,7 @@ impl<M> SubMatrix<M> {
     }
 }
 
-impl<M: Matrix<T>, T: Send + Sync> Matrix<T> for SubMatrix<M> {
-    type Row<'a>
-        = Take<Skip<M::Row<'a>>>
-    where
-        Self: 'a;
-
-    #[inline]
-    fn row(&self, r: usize) -> Self::Row<'_> {
-        self.inner
-            .row(r)
-            .skip(self.range.start)
-            .take(self.range.end)
-    }
-
-    #[inline]
-    fn row_slice(&self, r: usize) -> impl Deref<Target = [T]> {
-        SubMatrixRowSlice::new(self.inner.row_slice(r), self.range.clone())
-    }
-
+impl<M: Matrix<T>, T: Clone + Send + Sync> Matrix<T> for SubMatrix<M> {
     #[inline]
     fn width(&self) -> usize {
         self.range.len()
@@ -300,6 +281,37 @@ impl<M: Matrix<T>, T: Send + Sync> Matrix<T> for SubMatrix<M> {
     #[inline]
     fn height(&self) -> usize {
         self.inner.height()
+    }
+
+    #[inline]
+    unsafe fn get_unchecked(&self, r: usize, c: usize) -> T {
+        unsafe { self.inner.get_unchecked(r, self.range.start + c) }
+    }
+
+    #[inline]
+    unsafe fn row_subseq_unchecked(
+        &self,
+        r: usize,
+        start: usize,
+        end: usize,
+    ) -> impl IntoIterator<Item = T, IntoIter = impl Iterator<Item = T> + Send + Sync> {
+        unsafe {
+            self.inner
+                .row_subseq_unchecked(r, self.range.start + start, end)
+        }
+    }
+
+    #[inline]
+    unsafe fn row_subslice_unchecked(
+        &self,
+        r: usize,
+        start: usize,
+        end: usize,
+    ) -> impl Deref<Target = [T]> {
+        unsafe {
+            self.inner
+                .row_subslice_unchecked(r, self.range.start + start, end)
+        }
     }
 }
 

@@ -18,7 +18,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_mersenne_31::Mersenne31;
 use p3_symmetric::{
-    CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher32, TruncatedPermutation,
+    CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher, TruncatedPermutation,
 };
 use p3_uni_stark_ext::{
     ProverInput, StarkConfig, StarkGenericConfig, Val, VerifierInput, keygen, prove, verify,
@@ -99,8 +99,8 @@ impl<F> BaseAirWithPublicValues<F> for MulAir {
 impl<AB: AirBuilder> Air<AB> for MulAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let main_local = main.row_slice(0);
-        let main_next = main.row_slice(1);
+        let main_local = main.row_slice(0).unwrap();
+        let main_next = main.row_slice(1).unwrap();
 
         for i in 0..REPETITIONS {
             let start = i * 3;
@@ -275,7 +275,7 @@ fn do_test_m31_circle(log_blowup: usize, degree: u64, log_n: usize) -> Result<()
     type Challenge = BinomialExtensionField<Val, 3>;
 
     type ByteHash = Keccak256Hash;
-    type FieldHash = SerializingHasher32<ByteHash>;
+    type FieldHash = SerializingHasher<ByteHash>;
     let byte_hash = ByteHash {};
     let field_hash = FieldHash::new(byte_hash);
 

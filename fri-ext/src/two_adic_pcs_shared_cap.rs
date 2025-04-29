@@ -72,6 +72,9 @@ where
         FriProofSharedCap<Challenge, FriMmcs, Val, Vec<BatchOpening<Val, InputMmcs>>, Digest>;
     type Error = <TwoAdicFriPcs<Val, Dft, InputMmcs, FriMmcs> as Pcs<Challenge, Challenger>>::Error;
 
+    const ZK: bool =
+        <TwoAdicFriPcs<Val, Dft, InputMmcs, FriMmcs> as Pcs<Challenge, Challenger>>::ZK;
+
     fn natural_domain_for_degree(&self, degree: usize) -> Self::Domain {
         Pcs::<Challenge, Challenger>::natural_domain_for_degree(&self.inner, degree)
     }
@@ -79,7 +82,7 @@ where
     #[allow(clippy::type_complexity)]
     fn commit(
         &self,
-        evaluations: Vec<(Self::Domain, RowMajorMatrix<Val>)>,
+        evaluations: impl IntoIterator<Item = (Self::Domain, RowMajorMatrix<Val>)>,
     ) -> (Self::Commitment, Self::ProverData) {
         Pcs::<Challenge, Challenger>::commit(&self.inner, evaluations)
     }

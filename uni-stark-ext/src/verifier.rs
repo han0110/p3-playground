@@ -197,7 +197,7 @@ where
                 zps[ch_i]
                     * ch.iter()
                         .enumerate()
-                        .map(|(e_i, &c)| SC::Challenge::ith_basis_element(e_i) * c)
+                        .map(|(e_i, &c)| SC::Challenge::ith_basis_element(e_i).unwrap() * c)
                         .sum::<SC::Challenge>()
             })
             .sum::<SC::Challenge>();
@@ -238,7 +238,7 @@ where
                     .map(|ch| {
                         ch.iter()
                             .enumerate()
-                            .map(|(e_i, &c)| SC::Challenge::ith_basis_element(e_i) * c)
+                            .map(|(e_i, &c)| SC::Challenge::ith_basis_element(e_i).unwrap() * c)
                             .sum::<SC::Challenge>()
                     })
                     .collect_vec()

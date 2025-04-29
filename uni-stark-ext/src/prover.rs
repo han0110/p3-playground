@@ -59,9 +59,8 @@ where
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
-    let (main_commit, main_data) = info_span!("commit to main data").in_scope(|| {
-        pcs.commit(izip!(main_domains.iter().copied(), main_traces.clone()).collect())
-    });
+    let (main_commit, main_data) = info_span!("commit to main data")
+        .in_scope(|| pcs.commit(izip!(main_domains.iter().copied(), main_traces.clone())));
 
     // Observe the instance.
     // degree < 2^255 so we can safely cast log_degree to a u8.
@@ -123,11 +122,9 @@ where
         has_any_interaction
             .then(|| {
                 pcs.commit(
-                    izip!(&main_domains, log_up_traces)
-                        .flat_map(|(main_domain, trace)| {
-                            trace.map(|trace| (*main_domain, trace.flatten_to_base()))
-                        })
-                        .collect(),
+                    izip!(&main_domains, log_up_traces).flat_map(|(main_domain, trace)| {
+                        trace.map(|trace| (*main_domain, trace.flatten_to_base()))
+                    }),
                 )
             })
             .unzip()
@@ -199,14 +196,14 @@ where
         .collect::<Vec<_>>()
     });
 
-    let quotient_chunks = izip!(pk.per_air(), &quotient_domains, quotient_values)
-        .flat_map(|(pk, quotient_domain, quotient_values)| {
+    let quotient_chunks = izip!(pk.per_air(), &quotient_domains, quotient_values).flat_map(
+        |(pk, quotient_domain, quotient_values)| {
             let quotient_flat = RowMajorMatrix::new_col(quotient_values).flatten_to_base();
             let quotient_chunks = quotient_domain.split_evals(pk.quotient_degree(), quotient_flat);
             let qc_domains = quotient_domain.split_domains(pk.quotient_degree());
             izip!(qc_domains, quotient_chunks)
-        })
-        .collect();
+        },
+    );
 
     let (quotient_commit, quotient_data) =
         info_span!("commit to quotient poly chunks").in_scope(|| pcs.commit(quotient_chunks));
@@ -339,8 +336,8 @@ where
                 .for_each(|(j, (numers, denoms))| {
                     let row_idx = i * chunk_rows + j;
 
-                    let local = main_trace.row_slice(row_idx);
-                    let next = main_trace.row_slice((row_idx + 1) % height);
+                    let local = main_trace.row_slice(row_idx).unwrap();
+                    let next = main_trace.row_slice((row_idx + 1) % height).unwrap();
                     let main = VerticalPair::new(
                         RowMajorMatrixView::new_row(&local),
                         RowMajorMatrixView::new_row(&next),
@@ -473,6 +470,7 @@ where
                                 PackedVal::<SC>::from_fn(|j| {
                                     log_up_trace_on_quotient_domain
                                         .get((row + j) % quotient_size, col + i)
+                                        .unwrap()
                                 })
                             })
                         })

@@ -3,8 +3,9 @@ use alloc::vec::Vec;
 
 use itertools::{Itertools, cloned};
 use p3_air::Air;
-use p3_commit::{LagrangeSelectors, PolynomialSpace, TwoAdicMultiplicativeCoset};
+use p3_commit::{LagrangeSelectors, PolynomialSpace};
 use p3_dft::{Radix2DitParallel, TwoAdicSubgroupDft};
+use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
     ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField,
     batch_multiplicative_inverse, cyclic_subgroup_coset_known_order, dot_product,
@@ -112,7 +113,7 @@ where
                 quotient_coeffs
                     .values
                     .par_chunks(Challenge::DIMENSION)
-                    .map(|chunk| Challenge::from_basis_coefficients_slice(chunk))
+                    .map(|chunk| Challenge::from_basis_coefficients_slice(chunk).unwrap())
                     .take(quotient_degree << self.skip_rounds)
                     .collect(),
             )
@@ -208,7 +209,7 @@ where
     (0..trace_lde.height())
         .into_par_iter()
         .map(|row| {
-            let row_slice = trace_lde.row_slice(row);
+            let row_slice = trace_lde.row_slice(row).unwrap();
             let main = RowMajorMatrixView::new(Val::Packing::pack_slice(&row_slice), meta.width);
             let sels = selectors_at_row(sels, is_first_chunk, is_last_chunk, row);
             let mut folder = ProverFolderGeneric {
@@ -228,22 +229,16 @@ where
 }
 
 #[inline]
-const fn domain<Val: TwoAdicField>(skip_rounds: usize) -> TwoAdicMultiplicativeCoset<Val> {
-    TwoAdicMultiplicativeCoset {
-        log_n: skip_rounds,
-        shift: Val::ONE,
-    }
+fn domain<Val: TwoAdicField>(skip_rounds: usize) -> TwoAdicMultiplicativeCoset<Val> {
+    TwoAdicMultiplicativeCoset::new(Val::ONE, skip_rounds).unwrap()
 }
 
 #[inline]
-const fn quotient_domain<Val: TwoAdicField>(
+fn quotient_domain<Val: TwoAdicField>(
     skip_rounds: usize,
     added_bits: usize,
 ) -> TwoAdicMultiplicativeCoset<Val> {
-    TwoAdicMultiplicativeCoset {
-        log_n: skip_rounds + added_bits,
-        shift: Val::GENERATOR,
-    }
+    TwoAdicMultiplicativeCoset::new(Val::GENERATOR, skip_rounds + added_bits).unwrap()
 }
 
 #[inline]

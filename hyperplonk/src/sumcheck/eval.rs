@@ -32,8 +32,10 @@ impl<Challenge: Field> EvalSumcheckProver<'_, Challenge> {
             .par_row_chunks(2)
             .zip(self.weight.par_chunks(2))
             .map(|(main, weight)| {
-                let lo = dot_product::<Challenge, _, _>(cloned(self.gamma_powers), main.row(0));
-                let hi = dot_product::<Challenge, _, _>(cloned(self.gamma_powers), main.row(1));
+                let lo: Challenge =
+                    dot_product(cloned(self.gamma_powers), main.row(0).unwrap().into_iter());
+                let hi: Challenge =
+                    dot_product(cloned(self.gamma_powers), main.row(1).unwrap().into_iter());
                 let weight_lo = weight[0];
                 let weight_hi = weight[1];
                 FieldArray([lo * weight_lo, (hi - lo) * (weight_hi - weight_lo)])
