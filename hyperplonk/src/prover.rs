@@ -1,50 +1,29 @@
 use alloc::vec::Vec;
-use core::ops::Deref;
 
 use itertools::{Itertools, chain, cloned, izip};
 use p3_air::{Air, BaseAirWithPublicValues};
+use p3_air_ext::{ProverInput, VerifierInput};
 use p3_challenger::FieldChallenger;
-use p3_field::{ExtensionField, Field, PackedValue, TwoAdicField};
+use p3_field::{ExtensionField, PackedValue, TwoAdicField};
 use p3_matrix::Matrix;
-use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
+use p3_matrix::dense::RowMajorMatrixView;
 use p3_util::log2_strict_usize;
 use tracing::instrument;
 
 use crate::{
     AirMeta, BatchSumcheckProof, EqHelper, FieldSlice, Proof, ProverFolderOnExtension,
     ProverFolderOnExtensionPacking, ProverFolderOnPacking, RegularSumcheckProver,
-    SymbolicAirBuilder, UnivariateSkipProof, UnivariateSkipProver, VerifierInput, ZeroCheckProof,
+    SymbolicAirBuilder, UnivariateSkipProof, UnivariateSkipProver, ZeroCheckProof,
 };
 
-#[derive(Clone, Debug)]
-pub struct ProverInput<Val, A> {
-    pub(crate) inner: VerifierInput<Val, A>,
-    pub(crate) trace: RowMajorMatrix<Val>,
-}
-
-impl<Val, A> Deref for ProverInput<Val, A> {
-    type Target = VerifierInput<Val, A>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl<Val: Field, A> ProverInput<Val, A> {
-    pub fn new(air: A, public_values: Vec<Val>, trace: RowMajorMatrix<Val>) -> Self
-    where
-        A: BaseAirWithPublicValues<Val>,
-    {
-        assert_eq!(air.width(), trace.width());
-        Self {
-            inner: VerifierInput::new(air, public_values),
-            trace,
-        }
-    }
-}
-
 #[instrument(skip_all)]
-pub fn prove<Val, Challenge, A>(
+#[allow(clippy::multiple_bound_locations)]
+pub fn prove<
+    Val,
+    Challenge,
+    #[cfg(feature = "check-constraints")] A: for<'a> Air<crate::DebugConstraintBuilder<'a, Val>>,
+    #[cfg(not(feature = "check-constraints"))] A,
+>(
     inputs: Vec<ProverInput<Val, A>>,
     mut challenger: impl FieldChallenger<Val>,
 ) -> Proof<Challenge>
@@ -57,6 +36,9 @@ where
         + for<'t> Air<ProverFolderOnExtension<'t, Val, Challenge>>
         + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
+    #[cfg(feature = "check-constraints")]
+    crate::check_constraints(&inputs);
+
     assert!(!inputs.is_empty());
 
     // TODO: Preprocess the meta.
@@ -65,10 +47,7 @@ where
         .map(|input| AirMeta::new(input.air()))
         .collect_vec();
 
-    let (inputs, traces) = inputs
-        .into_iter()
-        .map(|input| (input.inner, input.trace))
-        .collect::<(Vec<_>, Vec<_>)>();
+    let (inputs, traces) = inputs.into_iter().map_into().collect::<(Vec<_>, Vec<_>)>();
     let log_heights = traces
         .iter()
         .map(|mat| log2_strict_usize(mat.height()))

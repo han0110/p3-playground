@@ -92,8 +92,13 @@ impl MyAir {
     }
 }
 
-fn run<A>(prover_inputs: Vec<ProverInput<Val, A>>)
-where
+#[allow(clippy::multiple_bound_locations)]
+fn run<
+    #[cfg(feature = "check-constraints")] A: for<'a> Air<p3_air_ext::DebugConstraintBuilder<'a, Val>>,
+    #[cfg(not(feature = "check-constraints"))] A,
+>(
+    prover_inputs: Vec<ProverInput<Val, A>>,
+) where
     A: Clone
         + BaseAirWithPublicValues<Val>
         + Air<SymbolicAirBuilder<Val>>
@@ -104,7 +109,7 @@ where
 {
     let verifier_inputs = prover_inputs
         .iter()
-        .map(|input| (**input).clone())
+        .map(|input| input.to_verifier_input())
         .collect();
 
     let mut prover_challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});

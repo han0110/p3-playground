@@ -3,8 +3,9 @@ use core::iter::repeat_n;
 
 use itertools::{Itertools, chain, cloned, enumerate, izip};
 use p3_air::{Air, BaseAirWithPublicValues};
+use p3_air_ext::VerifierInput;
 use p3_challenger::FieldChallenger;
-use p3_field::{ExtensionField, Field, TwoAdicField, batch_multiplicative_inverse, dot_product};
+use p3_field::{ExtensionField, TwoAdicField, batch_multiplicative_inverse, dot_product};
 use p3_matrix::dense::RowMajorMatrixView;
 
 use crate::{
@@ -16,30 +17,6 @@ use crate::{
 pub enum Error {
     InvalidProofShape,
     OodEvaluationMismatch,
-}
-
-#[derive(Clone, Debug)]
-pub struct VerifierInput<Val, A> {
-    pub(crate) air: A,
-    pub(crate) public_values: Vec<Val>,
-}
-
-impl<Val: Field, A> VerifierInput<Val, A> {
-    pub fn new(air: A, public_values: Vec<Val>) -> Self
-    where
-        A: BaseAirWithPublicValues<Val>,
-    {
-        assert_eq!(air.num_public_values(), public_values.len());
-        Self { air, public_values }
-    }
-
-    pub fn air(&self) -> &A {
-        &self.air
-    }
-
-    pub fn public_values(&self) -> &[Val] {
-        &self.public_values
-    }
 }
 
 pub fn verify<Val, Challenge, A>(
