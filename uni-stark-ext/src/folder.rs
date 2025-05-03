@@ -6,10 +6,10 @@ use p3_air::{AirBuilder, AirBuilderWithPublicValues, ExtensionBuilder};
 use p3_field::{BasedVectorSpace, PackedField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrixView;
-use p3_matrix::stack::VerticalPair;
 
 use crate::{
     InteractionAirBuilder, InteractionType, PackedChallenge, PackedVal, StarkGenericConfig, Val,
+    ViewPair,
 };
 
 #[derive(Debug)]
@@ -29,8 +29,6 @@ pub struct ProverConstraintFolder<'a, SC: StarkGenericConfig> {
     pub denoms: Vec<PackedChallenge<SC>>,
     pub interaction_index: usize,
 }
-
-type ViewPair<'a, T> = VerticalPair<RowMajorMatrixView<'a, T>, RowMajorMatrixView<'a, T>>;
 
 #[derive(Debug)]
 pub struct VerifierConstraintFolder<'a, SC: StarkGenericConfig> {

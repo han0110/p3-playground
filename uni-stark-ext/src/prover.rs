@@ -36,7 +36,8 @@ pub fn prove<
 ) -> Proof<SC>
 where
     SC: StarkGenericConfig,
-    A: for<'a> Air<ProverInteractionFolder<'a, SC>> + for<'a> Air<ProverConstraintFolder<'a, SC>>,
+    A: for<'a> Air<ProverInteractionFolder<'a, Val<SC>, SC::Challenge>>
+        + for<'a> Air<ProverConstraintFolder<'a, SC>>,
 {
     #[cfg(feature = "check-constraints")]
     crate::check_constraints(&inputs);
@@ -92,7 +93,7 @@ where
             .map(|(pk, input, main_trace)| {
                 pk.has_interaction()
                     .then(|| {
-                        log_up_trace(
+                        log_up_trace::<SC, _>(
                             pk.interaction_count,
                             &pk.interaction_chunks,
                             &input.air,
@@ -310,7 +311,7 @@ fn log_up_trace<SC, A>(
 ) -> (SC::Challenge, RowMajorMatrix<SC::Challenge>)
 where
     SC: StarkGenericConfig,
-    A: for<'a> Air<ProverInteractionFolder<'a, SC>>,
+    A: for<'a> Air<ProverInteractionFolder<'a, Val<SC>, SC::Challenge>>,
 {
     let width = interaction_chunks.len() + 1;
     let height = main_trace.height();
