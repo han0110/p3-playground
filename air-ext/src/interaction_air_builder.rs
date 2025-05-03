@@ -55,14 +55,19 @@ pub trait InteractionAirBuilder: AirBuilder {
 
 pub type ViewPair<'a, T> = VerticalPair<RowMajorMatrixView<'a, T>, RowMajorMatrixView<'a, T>>;
 
-pub struct ProverInteractionFolder<
+pub type ProverInteractionFolder<'a, Val, Challenge> =
+    ProverInteractionFolderGeneric<'a, Val, Challenge, Val, Challenge, ViewPair<'a, Val>>;
+
+pub type ProverInteractionFolderOnPacking<'a, Val, Challenge> = ProverInteractionFolderGeneric<
     'a,
     Val,
     Challenge,
-    Var = Val,
-    VarEF = Challenge,
-    M = ViewPair<'a, Var>,
-> {
+    <Val as Field>::Packing,
+    <Challenge as ExtensionField<Val>>::ExtensionPacking,
+    RowMajorMatrixView<'a, <Val as Field>::Packing>,
+>;
+
+pub struct ProverInteractionFolderGeneric<'a, Val, Challenge, Var, VarEF, M> {
     pub main: M,
     pub public_values: &'a Vec<Val>,
     pub beta_powers: &'a [Challenge],
@@ -73,7 +78,7 @@ pub struct ProverInteractionFolder<
 }
 
 impl<Val, Challenge, Var, VarEF, M> AirBuilder
-    for ProverInteractionFolder<'_, Val, Challenge, Var, VarEF, M>
+    for ProverInteractionFolderGeneric<'_, Val, Challenge, Var, VarEF, M>
 where
     Val: Field,
     Challenge: ExtensionField<Val>,
@@ -111,7 +116,7 @@ where
 }
 
 impl<Val, Challenge, Var, VarEF, M> AirBuilderWithPublicValues
-    for ProverInteractionFolder<'_, Val, Challenge, Var, VarEF, M>
+    for ProverInteractionFolderGeneric<'_, Val, Challenge, Var, VarEF, M>
 where
     Val: Field,
     Challenge: ExtensionField<Val>,
@@ -128,7 +133,7 @@ where
 }
 
 impl<Val, Challenge, Var, VarEF, M> InteractionAirBuilder
-    for ProverInteractionFolder<'_, Val, Challenge, Var, VarEF, M>
+    for ProverInteractionFolderGeneric<'_, Val, Challenge, Var, VarEF, M>
 where
     Val: Field,
     Challenge: ExtensionField<Val>,
