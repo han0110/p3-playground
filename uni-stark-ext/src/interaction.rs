@@ -1,7 +1,98 @@
 use alloc::vec::Vec;
 
 use itertools::{Itertools, izip};
-use p3_air::ExtensionBuilder;
+use p3_air::{AirBuilder, AirBuilderWithPublicValues, ExtensionBuilder};
+use p3_air_ext::{InteractionAirBuilder, InteractionType, ViewPair};
+use p3_field::{ExtensionField, Field};
+
+pub struct ProverInteractionFolder<'a, Val, Challenge> {
+    pub main: ViewPair<'a, Val>,
+    pub public_values: &'a Vec<Val>,
+    pub beta_powers: &'a [Challenge],
+    pub gamma_powers: &'a [Challenge],
+    pub numers: &'a mut [Val],
+    pub denoms: &'a mut [Challenge],
+    pub interaction_index: usize,
+}
+
+impl<'a, Val, Challenge> AirBuilder for ProverInteractionFolder<'a, Val, Challenge>
+where
+    Val: Field,
+    Challenge: ExtensionField<Val>,
+{
+    type F = Val;
+    type Expr = Val;
+    type Var = Val;
+    type M = ViewPair<'a, Val>;
+
+    #[inline]
+    fn main(&self) -> Self::M {
+        self.main
+    }
+
+    #[inline]
+    fn is_first_row(&self) -> Self::Expr {
+        unimplemented!()
+    }
+
+    #[inline]
+    fn is_last_row(&self) -> Self::Expr {
+        unimplemented!()
+    }
+
+    #[inline]
+    fn is_transition_window(&self, _: usize) -> Self::Expr {
+        unimplemented!()
+    }
+
+    #[inline]
+    fn assert_zero<I: Into<Self::Expr>>(&mut self, _: I) {}
+}
+
+impl<Val, Challenge> AirBuilderWithPublicValues for ProverInteractionFolder<'_, Val, Challenge>
+where
+    Val: Field,
+    Challenge: ExtensionField<Val>,
+{
+    type PublicVar = Self::F;
+
+    #[inline]
+    fn public_values(&self) -> &[Self::F] {
+        self.public_values
+    }
+}
+
+impl<Val, Challenge> InteractionAirBuilder for ProverInteractionFolder<'_, Val, Challenge>
+where
+    Val: Field,
+    Challenge: ExtensionField<Val>,
+{
+    const ONLY_INTERACTION: bool = true;
+
+    #[inline]
+    fn push_interaction(
+        &mut self,
+        bus_index: usize,
+        fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        count: impl Into<Self::Expr>,
+        interaction_type: InteractionType,
+    ) {
+        let mut count = count.into();
+        if interaction_type == InteractionType::Receive {
+            count = -count;
+        }
+        self.numers[self.interaction_index] = count;
+
+        let mut fields = fields.into_iter();
+        self.denoms[self.interaction_index] =
+            self.gamma_powers[bus_index] + fields.next().unwrap().into();
+        izip!(fields, self.beta_powers).for_each(|(field, beta_power)| {
+            self.denoms[self.interaction_index] += *beta_power * field.into();
+        });
+
+        self.interaction_index += 1;
+    }
+}
 
 #[inline]
 pub(crate) fn eval_log_up<AB: ExtensionBuilder>(

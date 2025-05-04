@@ -3,13 +3,14 @@ use core::mem::transmute;
 use core::ops::*;
 
 use p3_air::{AirBuilder, AirBuilderWithPublicValues};
+use p3_air_ext::{InteractionAirBuilder, InteractionType};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing};
 use p3_matrix::dense::RowMajorMatrixView;
 
-pub type ProverFolderOnExtension<'t, Val, Challenge> =
-    ProverFolderGeneric<'t, Val, Challenge, Challenge, Challenge>;
+pub type ProverConstraintFolderOnExtension<'t, Val, Challenge> =
+    ProverConstraintFolderGeneric<'t, Val, Challenge, Challenge, Challenge>;
 
-pub type ProverFolderOnPacking<'t, Val, Challenge> = ProverFolderGeneric<
+pub type ProverConstraintFolderOnPacking<'t, Val, Challenge> = ProverConstraintFolderGeneric<
     't,
     Val,
     Challenge,
@@ -18,7 +19,7 @@ pub type ProverFolderOnPacking<'t, Val, Challenge> = ProverFolderGeneric<
 >;
 
 #[derive(Debug)]
-pub struct ProverFolderGeneric<'a, F, EF, Var, VarEF> {
+pub struct ProverConstraintFolderGeneric<'a, F, EF, Var, VarEF> {
     pub main: RowMajorMatrixView<'a, Var>,
     pub public_values: &'a [F],
     pub is_first_row: Var,
@@ -29,7 +30,7 @@ pub struct ProverFolderGeneric<'a, F, EF, Var, VarEF> {
     pub constraint_index: usize,
 }
 
-impl<'a, F, EF, Var, VarEF> AirBuilder for ProverFolderGeneric<'a, F, EF, Var, VarEF>
+impl<'a, F, EF, Var, VarEF> AirBuilder for ProverConstraintFolderGeneric<'a, F, EF, Var, VarEF>
 where
     F: Field,
     EF: ExtensionField<F>,
@@ -74,7 +75,8 @@ where
     }
 }
 
-impl<F, EF, Var, VarEF> AirBuilderWithPublicValues for ProverFolderGeneric<'_, F, EF, Var, VarEF>
+impl<F, EF, Var, VarEF> AirBuilderWithPublicValues
+    for ProverConstraintFolderGeneric<'_, F, EF, Var, VarEF>
 where
     F: Field,
     EF: ExtensionField<F>,
@@ -89,12 +91,33 @@ where
     }
 }
 
-// FIXME: Figure a way to have a single `ProverFolder` but support `main` being
+impl<F, EF, Var, VarEF> InteractionAirBuilder
+    for ProverConstraintFolderGeneric<'_, F, EF, Var, VarEF>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Var: Algebra<F> + Copy + Send + Sync,
+    VarEF: Algebra<Var> + From<EF>,
+{
+    const ONLY_INTERACTION: bool = false;
+
+    fn push_interaction(
+        &mut self,
+        _bus_index: usize,
+        _fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        _count: impl Into<Self::Expr>,
+        _interaction_type: InteractionType,
+    ) {
+        // TODO
+    }
+}
+
+// FIXME: Figure a way to have a single `ProverConstraintFolder` but support `main` being
 //        matrix with base field values or extension field packed values.
 //        The main constraint is `AirBuilder` requires `Var: Algebra<F>` but
 //        `EF::ExtensionPacking` only has `Algebra<EF>`.
 #[derive(Debug)]
-pub struct ProverFolderOnExtensionPacking<'a, F: Field, EF: ExtensionField<F>> {
+pub struct ProverConstraintFolderOnExtensionPacking<'a, F: Field, EF: ExtensionField<F>> {
     pub main: RowMajorMatrixView<'a, ExtensionPacking<F, EF>>,
     pub public_values: &'a [F],
     pub is_first_row: ExtensionPacking<F, EF>,
@@ -105,7 +128,9 @@ pub struct ProverFolderOnExtensionPacking<'a, F: Field, EF: ExtensionField<F>> {
     pub constraint_index: usize,
 }
 
-impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for ProverFolderOnExtensionPacking<'a, F, EF> {
+impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder
+    for ProverConstraintFolderOnExtensionPacking<'a, F, EF>
+{
     type F = F;
     type Expr = ExtensionPacking<F, EF>;
     type Var = ExtensionPacking<F, EF>;
@@ -145,13 +170,29 @@ impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for ProverFolderOnExtension
 }
 
 impl<F: Field, EF: ExtensionField<F>> AirBuilderWithPublicValues
-    for ProverFolderOnExtensionPacking<'_, F, EF>
+    for ProverConstraintFolderOnExtensionPacking<'_, F, EF>
 {
     type PublicVar = F;
 
     #[inline]
     fn public_values(&self) -> &[F] {
         self.public_values
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
+    for ProverConstraintFolderOnExtensionPacking<'_, F, EF>
+{
+    const ONLY_INTERACTION: bool = false;
+
+    fn push_interaction(
+        &mut self,
+        _bus_index: usize,
+        _fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        _count: impl Into<Self::Expr>,
+        _interaction_type: InteractionType,
+    ) {
+        // TODO
     }
 }
 
@@ -312,7 +353,7 @@ impl<F: Field, EF: ExtensionField<F>> Product for ExtensionPacking<F, EF> {
 }
 
 #[derive(Debug)]
-pub struct VerifierFolder<'a, F, EF> {
+pub struct VerifierConstraintFolder<'a, F, EF> {
     pub main: RowMajorMatrixView<'a, EF>,
     pub public_values: &'a [F],
     pub is_first_row: EF,
@@ -322,7 +363,7 @@ pub struct VerifierFolder<'a, F, EF> {
     pub accumulator: EF,
 }
 
-impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for VerifierFolder<'a, F, EF> {
+impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for VerifierConstraintFolder<'a, F, EF> {
     type F = F;
     type Expr = EF;
     type Var = EF;
@@ -355,10 +396,28 @@ impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for VerifierFolder<'a, F, E
     }
 }
 
-impl<F: Field, EF: ExtensionField<F>> AirBuilderWithPublicValues for VerifierFolder<'_, F, EF> {
+impl<F: Field, EF: ExtensionField<F>> AirBuilderWithPublicValues
+    for VerifierConstraintFolder<'_, F, EF>
+{
     type PublicVar = Self::F;
 
     fn public_values(&self) -> &[Self::F] {
         self.public_values
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
+    for VerifierConstraintFolder<'_, F, EF>
+{
+    const ONLY_INTERACTION: bool = false;
+
+    fn push_interaction(
+        &mut self,
+        _bus_index: usize,
+        _fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        _count: impl Into<Self::Expr>,
+        _interaction_type: InteractionType,
+    ) {
+        // TODO
     }
 }

@@ -9,7 +9,7 @@ use p3_field::{ExtensionField, TwoAdicField, batch_multiplicative_inverse, dot_p
 use p3_matrix::dense::RowMajorMatrixView;
 
 use crate::{
-    AirMeta, Proof, SymbolicAirBuilder, VerifierFolder, ZeroCheckProof, eq_eval, eq_poly,
+    AirMeta, Proof, SymbolicAirBuilder, VerifierConstraintFolder, ZeroCheckProof, eq_eval, eq_poly,
     lagrange_evals, selectors_at_point,
 };
 
@@ -29,7 +29,7 @@ where
     Challenge: ExtensionField<Val>,
     A: BaseAirWithPublicValues<Val>
         + Air<SymbolicAirBuilder<Val>>
-        + for<'t> Air<VerifierFolder<'t, Val, Challenge>>,
+        + for<'t> Air<VerifierConstraintFolder<'t, Val, Challenge>>,
 {
     assert!(!inputs.is_empty());
 
@@ -74,7 +74,7 @@ where
     Challenge: ExtensionField<Val>,
     A: BaseAirWithPublicValues<Val>
         + Air<SymbolicAirBuilder<Val>>
-        + for<'t> Air<VerifierFolder<'t, Val, Challenge>>,
+        + for<'t> Air<VerifierConstraintFolder<'t, Val, Challenge>>,
 {
     let skip_rounds = proof
         .univariate_skips
@@ -183,7 +183,7 @@ where
                 let is_first_row = sels.is_first_row * eq_0_z;
                 let is_last_row = sels.is_last_row * eq_1_z;
                 let is_transition = Challenge::ONE - eq_1_z + sels.is_transition * eq_1_z;
-                let mut builder = VerifierFolder {
+                let mut builder = VerifierConstraintFolder {
                     main: RowMajorMatrixView::new(evals, meta.width),
                     public_values: input.public_values(),
                     is_first_row,

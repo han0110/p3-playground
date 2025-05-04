@@ -15,8 +15,8 @@ use tracing::instrument;
 
 use crate::{
     AirMeta, AirTrace, CompressedRoundPoly, EqHelper, ExtensionPacking, FieldSlice,
-    PackedExtensionValue, ProverFolderGeneric, ProverFolderOnExtension,
-    ProverFolderOnExtensionPacking, ProverFolderOnPacking, RoundPoly, vec_add,
+    PackedExtensionValue, ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
+    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking, RoundPoly, vec_add,
 };
 
 pub(crate) struct RegularSumcheckProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
@@ -36,9 +36,9 @@ pub(crate) struct RegularSumcheckProver<'a, Val: Field, Challenge: ExtensionFiel
 impl<'a, Val: Field, Challenge: ExtensionField<Val>, A> RegularSumcheckProver<'a, Val, Challenge, A>
 where
     A: BaseAir<Val>
-        + for<'t> Air<ProverFolderOnPacking<'t, Val, Challenge>>
-        + for<'t> Air<ProverFolderOnExtension<'t, Val, Challenge>>
-        + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
+        + for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
     pub(crate) fn new(
         meta: AirMeta,
@@ -322,11 +322,11 @@ impl<Val: Field, Challenge: ExtensionField<Val>, Var: Copy + Send + Sync + Prime
     #[inline]
     fn eval<A, VarEF>(&self, air: &A, public_values: &[Val], alpha_powers: &[Challenge]) -> VarEF
     where
-        A: for<'t> Air<ProverFolderGeneric<'t, Val, Challenge, Var, VarEF>>,
+        A: for<'t> Air<ProverConstraintFolderGeneric<'t, Val, Challenge, Var, VarEF>>,
         Var: Algebra<Val>,
         VarEF: Algebra<Var> + From<Challenge>,
     {
-        let mut builder = ProverFolderGeneric {
+        let mut builder = ProverConstraintFolderGeneric {
             main: DenseMatrix::new(&self.main_eval, self.width),
             public_values,
             is_first_row: self.is_first_row_eval,
@@ -352,9 +352,9 @@ impl<Val: Field, Challenge: ExtensionField<Val>>
         alpha_powers: &[Challenge],
     ) -> Challenge::ExtensionPacking
     where
-        A: for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
+        A: for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
     {
-        let mut builder = ProverFolderOnExtensionPacking {
+        let mut builder = ProverConstraintFolderOnExtensionPacking {
             main: DenseMatrix::new(ExtensionPacking::from_slice(&self.main_eval), self.width),
             public_values,
             is_first_row: ExtensionPacking(self.is_first_row_eval),

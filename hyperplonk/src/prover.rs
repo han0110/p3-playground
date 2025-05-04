@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use itertools::{Itertools, chain, cloned, izip};
 use p3_air::{Air, BaseAirWithPublicValues};
-use p3_air_ext::{ProverInput, VerifierInput};
+use p3_air_ext::{ProverInput, ProverInteractionFolderOnPacking, VerifierInput};
 use p3_challenger::FieldChallenger;
 use p3_field::{ExtensionField, PackedValue, TwoAdicField};
 use p3_matrix::Matrix;
@@ -11,9 +11,10 @@ use p3_util::log2_strict_usize;
 use tracing::instrument;
 
 use crate::{
-    AirMeta, BatchSumcheckProof, EqHelper, FieldSlice, Proof, ProverFolderOnExtension,
-    ProverFolderOnExtensionPacking, ProverFolderOnPacking, RegularSumcheckProver,
-    SymbolicAirBuilder, UnivariateSkipProof, UnivariateSkipProver, ZeroCheckProof,
+    AirMeta, BatchSumcheckProof, EqHelper, FieldSlice, Proof, ProverConstraintFolderOnExtension,
+    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking,
+    RegularSumcheckProver, SymbolicAirBuilder, UnivariateSkipProof, UnivariateSkipProver,
+    ZeroCheckProof,
 };
 
 #[instrument(skip_all)]
@@ -32,9 +33,10 @@ where
     Challenge: ExtensionField<Val>,
     A: BaseAirWithPublicValues<Val>
         + Air<SymbolicAirBuilder<Val>>
-        + for<'t> Air<ProverFolderOnPacking<'t, Val, Challenge>>
-        + for<'t> Air<ProverFolderOnExtension<'t, Val, Challenge>>
-        + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
+        + for<'t> Air<ProverInteractionFolderOnPacking<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
     #[cfg(feature = "check-constraints")]
     crate::check_constraints(&inputs);
@@ -105,9 +107,9 @@ fn prove_zero_check<Val, Challenge, A>(
 where
     Val: TwoAdicField + Ord,
     Challenge: ExtensionField<Val>,
-    A: for<'t> Air<ProverFolderOnPacking<'t, Val, Challenge>>
-        + for<'t> Air<ProverFolderOnExtension<'t, Val, Challenge>>
-        + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
+    A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
     let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
 

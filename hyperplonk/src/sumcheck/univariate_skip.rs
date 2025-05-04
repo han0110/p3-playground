@@ -18,9 +18,9 @@ use tracing::{info_span, instrument};
 
 use crate::{
     AirMeta, AirTrace, EvalSumcheckProver, FieldSlice, IsFirstRow, IsLastRow, IsTransition,
-    PackedExtensionValue, ProverFolderGeneric, ProverFolderOnExtension,
-    ProverFolderOnExtensionPacking, ProverFolderOnPacking, RegularSumcheckProver, RoundPoly,
-    eq_poly_packed, vec_add,
+    PackedExtensionValue, ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
+    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking,
+    RegularSumcheckProver, RoundPoly, eq_poly_packed, vec_add,
 };
 
 pub(crate) struct UnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
@@ -37,7 +37,7 @@ impl<'a, Val, Challenge, A> UnivariateSkipProver<'a, Val, Challenge, A>
 where
     Val: TwoAdicField + Ord,
     Challenge: ExtensionField<Val>,
-    A: for<'t> Air<ProverFolderOnPacking<'t, Val, Challenge>>,
+    A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>,
 {
     pub(crate) fn new(
         meta: AirMeta,
@@ -129,9 +129,9 @@ where
         max_regular_rounds: usize,
     ) -> RegularSumcheckProver<'a, Val, Challenge, A>
     where
-        A: for<'t> Air<ProverFolderOnPacking<'t, Val, Challenge>>
-            + for<'t> Air<ProverFolderOnExtension<'t, Val, Challenge>>
-            + for<'t> Air<ProverFolderOnExtensionPacking<'t, Val, Challenge>>,
+        A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
+            + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
+            + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
     {
         let claim = self.round_poly.subclaim(x) * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
         let regular_rounds = self.trace.log_height() - self.skip_rounds;
@@ -195,7 +195,7 @@ fn compute_quotient_values<Val, Challenge, A>(
 where
     Val: TwoAdicField + Ord,
     Challenge: ExtensionField<Val>,
-    A: for<'t> Air<ProverFolderOnPacking<'t, Val, Challenge>>,
+    A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>,
 {
     let trace_lde = {
         let values = Val::Packing::unpack_slice(trace.values);
@@ -212,7 +212,7 @@ where
             let row_slice = trace_lde.row_slice(row).unwrap();
             let main = RowMajorMatrixView::new(Val::Packing::pack_slice(&row_slice), meta.width);
             let sels = selectors_at_row(sels, is_first_chunk, is_last_chunk, row);
-            let mut folder = ProverFolderGeneric {
+            let mut folder = ProverConstraintFolderGeneric {
                 main,
                 public_values,
                 is_first_row: sels.is_first_row,
