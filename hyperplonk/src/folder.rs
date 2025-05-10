@@ -2,6 +2,7 @@ use core::iter::{Product, Sum};
 use core::mem::transmute;
 use core::ops::*;
 
+use itertools::izip;
 use p3_air::{AirBuilder, AirBuilderWithPublicValues};
 use p3_air_ext::{InteractionAirBuilder, InteractionType};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing};
@@ -25,9 +26,14 @@ pub struct ProverConstraintFolderGeneric<'a, F, EF, Var, VarEF> {
     pub is_first_row: Var,
     pub is_last_row: Var,
     pub is_transition: Var,
-    pub alpha_powers: &'a [EF],
-    pub accumulator: VarEF,
+    pub beta_powers: &'a [EF],
+    pub gamma_powers: &'a [EF],
+    pub zero_check_alpha_powers: &'a [EF],
+    pub eval_check_alpha_powers: &'a [EF],
+    pub zero_check_accumulator: VarEF,
+    pub eval_check_accumulator: VarEF,
     pub constraint_index: usize,
+    pub interaction_index: usize,
 }
 
 impl<'a, F, EF, Var, VarEF> AirBuilder for ProverConstraintFolderGeneric<'a, F, EF, Var, VarEF>
@@ -69,8 +75,8 @@ where
     #[inline]
     fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
         let x = x.into();
-        let alpha_power = self.alpha_powers[self.constraint_index];
-        self.accumulator += VarEF::from(alpha_power) * x;
+        let alpha_power = self.zero_check_alpha_powers[self.constraint_index];
+        self.zero_check_accumulator += VarEF::from(alpha_power) * x;
         self.constraint_index += 1;
     }
 }
@@ -103,12 +109,30 @@ where
 
     fn push_interaction(
         &mut self,
-        _bus_index: usize,
-        _fields: impl IntoIterator<Item: Into<Self::Expr>>,
-        _count: impl Into<Self::Expr>,
-        _interaction_type: InteractionType,
+        bus_index: usize,
+        fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        count: impl Into<Self::Expr>,
+        interaction_type: InteractionType,
     ) {
-        // TODO
+        let mut numer = count.into();
+        if interaction_type == InteractionType::Receive {
+            numer = -numer;
+        }
+        let alpha_power = self.eval_check_alpha_powers[2 * self.interaction_index];
+        self.eval_check_accumulator += VarEF::from(alpha_power) * numer;
+
+        let denom = {
+            let mut fields = fields.into_iter();
+            VarEF::from(self.gamma_powers[bus_index])
+                + fields.next().unwrap().into()
+                + izip!(fields, self.beta_powers)
+                    .map(|(field, beta_power)| VarEF::from(*beta_power) * field.into())
+                    .sum::<VarEF>()
+        };
+        let alpha_power = self.eval_check_alpha_powers[2 * self.interaction_index + 1];
+        self.eval_check_accumulator += VarEF::from(alpha_power) * denom;
+
+        self.interaction_index += 1;
     }
 }
 
@@ -123,9 +147,14 @@ pub struct ProverConstraintFolderOnExtensionPacking<'a, F: Field, EF: ExtensionF
     pub is_first_row: ExtensionPacking<F, EF>,
     pub is_last_row: ExtensionPacking<F, EF>,
     pub is_transition: ExtensionPacking<F, EF>,
-    pub alpha_powers: &'a [EF],
-    pub accumulator: ExtensionPacking<F, EF>,
+    pub beta_powers: &'a [EF],
+    pub gamma_powers: &'a [EF],
+    pub zero_check_alpha_powers: &'a [EF],
+    pub eval_check_alpha_powers: &'a [EF],
+    pub zero_check_accumulator: ExtensionPacking<F, EF>,
+    pub eval_check_accumulator: ExtensionPacking<F, EF>,
     pub constraint_index: usize,
+    pub interaction_index: usize,
 }
 
 impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder
@@ -163,8 +192,9 @@ impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder
     #[inline]
     fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
         let x = x.into();
-        let alpha_power = self.alpha_powers[self.constraint_index];
-        self.accumulator += ExtensionPacking(EF::ExtensionPacking::from(alpha_power)) * x;
+        let alpha_power = self.zero_check_alpha_powers[self.constraint_index];
+        self.zero_check_accumulator +=
+            ExtensionPacking(EF::ExtensionPacking::from(alpha_power)) * x;
         self.constraint_index += 1;
     }
 }
@@ -187,12 +217,32 @@ impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
 
     fn push_interaction(
         &mut self,
-        _bus_index: usize,
-        _fields: impl IntoIterator<Item: Into<Self::Expr>>,
-        _count: impl Into<Self::Expr>,
-        _interaction_type: InteractionType,
+        bus_index: usize,
+        fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        count: impl Into<Self::Expr>,
+        interaction_type: InteractionType,
     ) {
-        // TODO
+        let mut numer = count.into();
+        if interaction_type == InteractionType::Receive {
+            numer = -numer;
+        }
+        let alpha_power = self.eval_check_alpha_powers[2 * self.interaction_index];
+        self.eval_check_accumulator.0 += EF::ExtensionPacking::from(alpha_power) * numer.0;
+
+        let denom = {
+            let mut fields = fields.into_iter();
+            EF::ExtensionPacking::from(self.gamma_powers[bus_index])
+                + fields.next().unwrap().into().0
+                + izip!(fields, self.beta_powers)
+                    .map(|(field, beta_power)| {
+                        EF::ExtensionPacking::from(*beta_power) * field.into().0
+                    })
+                    .sum::<EF::ExtensionPacking>()
+        };
+        let alpha_power = self.eval_check_alpha_powers[2 * self.interaction_index + 1];
+        self.eval_check_accumulator.0 += EF::ExtensionPacking::from(alpha_power) * denom;
+
+        self.interaction_index += 1;
     }
 }
 
@@ -360,7 +410,10 @@ pub struct VerifierConstraintFolder<'a, F, EF> {
     pub is_last_row: EF,
     pub is_transition: EF,
     pub alpha: EF,
-    pub accumulator: EF,
+    pub beta_powers: &'a [EF],
+    pub gamma_powers: &'a [EF],
+    pub zero_check_accumulator: EF,
+    pub eval_check_accumulator: EF,
 }
 
 impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for VerifierConstraintFolder<'a, F, EF> {
@@ -391,8 +444,8 @@ impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder for VerifierConstraintFolde
 
     fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
         let x: EF = x.into();
-        self.accumulator *= self.alpha;
-        self.accumulator += x;
+        self.zero_check_accumulator *= self.alpha;
+        self.zero_check_accumulator += x;
     }
 }
 
@@ -413,11 +466,27 @@ impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
 
     fn push_interaction(
         &mut self,
-        _bus_index: usize,
-        _fields: impl IntoIterator<Item: Into<Self::Expr>>,
-        _count: impl Into<Self::Expr>,
-        _interaction_type: InteractionType,
+        bus_index: usize,
+        fields: impl IntoIterator<Item: Into<Self::Expr>>,
+        count: impl Into<Self::Expr>,
+        interaction_type: InteractionType,
     ) {
-        // TODO
+        let mut numer = count.into();
+        if interaction_type == InteractionType::Receive {
+            numer = -numer;
+        }
+        self.eval_check_accumulator *= self.alpha;
+        self.eval_check_accumulator += numer;
+
+        let denom = {
+            let mut fields = fields.into_iter();
+            self.gamma_powers[bus_index]
+                + fields.next().unwrap().into()
+                + izip!(fields, self.beta_powers)
+                    .map(|(field, beta_power)| *beta_power * field.into())
+                    .sum::<EF>()
+        };
+        self.eval_check_accumulator *= self.alpha;
+        self.eval_check_accumulator += denom;
     }
 }

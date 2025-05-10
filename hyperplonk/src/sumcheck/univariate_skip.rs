@@ -1,5 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp::max;
 
 use itertools::{Itertools, cloned};
 use p3_air::Air;
@@ -17,20 +18,24 @@ use p3_util::log2_ceil_usize;
 use tracing::{info_span, instrument};
 
 use crate::{
-    AirMeta, AirTrace, EvalSumcheckProver, FieldSlice, IsFirstRow, IsLastRow, IsTransition,
-    PackedExtensionValue, ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
-    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking,
-    RegularSumcheckProver, RoundPoly, eq_poly_packed, vec_add,
+    AirMeta, AirTrace, EqHelper, EvalSumcheckProver, FieldSlice, IsFirstRow, IsLastRow,
+    IsTransition, PackedExtensionValue, ProverConstraintFolderGeneric,
+    ProverConstraintFolderOnExtension, ProverConstraintFolderOnExtensionPacking,
+    ProverConstraintFolderOnPacking, RegularSumcheckProver, RoundPoly, eq_poly_packed,
+    vec_pair_add,
 };
 
 pub(crate) struct UnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
-    meta: AirMeta,
+    pub(crate) meta: &'a AirMeta,
     air: &'a A,
     public_values: &'a [Val],
-    alpha_powers: &'a [Challenge],
+    beta_powers: &'a [Challenge],
+    gamma_powers: &'a [Challenge],
+    pub(crate) alpha_powers: &'a [Challenge],
     trace: AirTrace<Val, Challenge>,
     skip_rounds: usize,
-    round_poly: RoundPoly<Challenge>,
+    zero_check_round_poly: RoundPoly<Challenge>,
+    eval_check_round_poly: RoundPoly<Challenge>,
 }
 
 impl<'a, Val, Challenge, A> UnivariateSkipProver<'a, Val, Challenge, A>
@@ -39,93 +44,113 @@ where
     Challenge: ExtensionField<Val>,
     A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        meta: AirMeta,
+        meta: &'a AirMeta,
         air: &'a A,
         public_values: &'a [Val],
+        beta_powers: &'a [Challenge],
+        gamma_powers: &'a [Challenge],
         alpha_powers: &'a [Challenge],
-        trace: RowMajorMatrixView<Val>,
+        trace: AirTrace<Val, Challenge>,
         skip_rounds: usize,
     ) -> Self {
-        assert!(trace.height() >= Val::Packing::WIDTH << skip_rounds);
-        let trace = AirTrace::new(trace);
         Self {
             meta,
             air,
             public_values,
+            beta_powers,
+            gamma_powers,
             alpha_powers,
             trace,
             skip_rounds,
-            round_poly: Default::default(),
+            zero_check_round_poly: Default::default(),
+            eval_check_round_poly: Default::default(),
         }
     }
 
     #[instrument(skip_all, name = "compute univariate skip round poly", fields(log_h = %self.trace.log_height()))]
-    pub(crate) fn compute_round_poly(&mut self, r: &[Challenge]) -> RoundPoly<Challenge> {
+    pub(crate) fn compute_round_poly(
+        &mut self,
+        r: &[Challenge],
+        z_fs: &[Challenge],
+    ) -> (RoundPoly<Challenge>, RoundPoly<Challenge>) {
         let AirTrace::Packing(trace) = &self.trace else {
             unimplemented!()
         };
 
-        let round_poly = {
-            let quotient_degree = self.meta.univariate_degree.saturating_sub(1);
-            let added_bits = log2_ceil_usize(quotient_degree);
+        let (zero_check_poly, eval_check_poly) = {
+            let has_interaction = self.meta.has_interaction() as usize;
+            let zero_check_quotient_degree = self.meta.zero_check_uv_degree.saturating_sub(1);
+            let eval_check_degree = self.meta.eval_check_uv_degree;
+            let added_bits = log2_ceil_usize(max(zero_check_quotient_degree, eval_check_degree));
             let sels = domain(self.skip_rounds)
                 .selectors_on_coset(quotient_domain(self.skip_rounds, added_bits));
             let eq_r_packed = eq_poly_packed(r);
-            let quotient_values = trace
+            let eq_z_fs_packed = eq_poly_packed(z_fs);
+            let (zero_check_values, eval_check_values) = trace
                 .par_row_chunks(1 << self.skip_rounds)
                 .zip(&eq_r_packed)
+                .zip(&eq_z_fs_packed)
                 .enumerate()
                 .par_fold_reduce(
                     || {
-                        vec![
-                            Challenge::ExtensionPacking::ZERO;
-                            1 << (self.skip_rounds + added_bits)
-                        ]
+                        (
+                            vec![<_>::ZERO; 1 << (self.skip_rounds + added_bits)],
+                            vec![<_>::ZERO; has_interaction << (self.skip_rounds + added_bits)],
+                        )
                     },
-                    |mut quotient_values, (chunk, (trace, scalar))| {
-                        quotient_values.slice_add_assign_scaled_iter(
-                            compute_quotient_values(
-                                self.meta,
-                                self.air,
-                                self.public_values,
-                                trace,
-                                self.alpha_powers,
-                                &sels,
-                                added_bits,
-                                chunk == 0,
-                                chunk == eq_r_packed.len() - 1,
-                            ),
-                            *scalar,
+                    |(mut zero_check_values, mut eval_check_values),
+                     (chunk, ((trace, eq_r_eval), eq_z_fs_eval))| {
+                        self.compute_chunk_values(
+                            &mut zero_check_values,
+                            &mut eval_check_values,
+                            trace,
+                            *eq_r_eval,
+                            *eq_z_fs_eval,
+                            &sels,
+                            added_bits,
+                            chunk == 0,
+                            chunk == eq_r_packed.len() - 1,
                         );
-                        quotient_values
+                        (zero_check_values, eval_check_values)
                     },
-                    vec_add,
-                )
-                .into_par_iter()
-                .map(|v| v.ext_sum())
-                .collect::<Vec<_>>();
-            let quotient_coeffs = Radix2DitParallel::default().coset_idft_batch(
-                RowMajorMatrix::new_col(quotient_values).flatten_to_base(),
-                Val::GENERATOR,
-            );
-            RoundPoly(
-                quotient_coeffs
-                    .values
-                    .par_chunks(Challenge::DIMENSION)
-                    .map(|chunk| Challenge::from_basis_coefficients_slice(chunk).unwrap())
-                    .take(quotient_degree << self.skip_rounds)
-                    .collect(),
+                    vec_pair_add,
+                );
+
+            let values_to_poly = |values: Vec<_>, degree| {
+                let mut poly = Radix2DitParallel::default()
+                    .coset_idft_algebra_batch(
+                        RowMajorMatrix::new_col(values.par_iter().map(<_>::ext_sum).collect()),
+                        Val::GENERATOR,
+                    )
+                    .values;
+                poly.truncate(degree << self.skip_rounds);
+                poly
+            };
+            join(
+                || values_to_poly(zero_check_values, zero_check_quotient_degree),
+                || {
+                    self.meta
+                        .has_interaction()
+                        .then(|| values_to_poly(eval_check_values, eval_check_degree))
+                        .unwrap_or_default()
+                },
             )
         };
 
-        self.round_poly = round_poly.clone();
-        round_poly
+        let zero_check_round_poly = RoundPoly(zero_check_poly);
+        let eval_check_round_poly = RoundPoly(eval_check_poly);
+        self.zero_check_round_poly = zero_check_round_poly.clone();
+        self.eval_check_round_poly = eval_check_round_poly.clone();
+        (zero_check_round_poly, eval_check_round_poly)
     }
 
     pub(crate) fn to_regular_prover(
         &self,
         x: Challenge,
+        eq_r_helper: &'a EqHelper<'a, Val, Challenge>,
+        eq_z_fs_helper: &'a EqHelper<'a, Val, Challenge>,
         max_regular_rounds: usize,
     ) -> RegularSumcheckProver<'a, Val, Challenge, A>
     where
@@ -133,7 +158,9 @@ where
             + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
             + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
     {
-        let claim = self.round_poly.subclaim(x) * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
+        let zero_check_claim = self.zero_check_round_poly.subclaim(x)
+            * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
+        let eval_check_claim = self.eval_check_round_poly.subclaim(x);
         let regular_rounds = self.trace.log_height() - self.skip_rounds;
         let trace = info_span!("fix univariate skip var").in_scope(|| {
             let lagrange_evals = lagrange_evals(self.skip_rounds, x);
@@ -144,14 +171,22 @@ where
             air: self.air,
             meta: self.meta,
             public_values: self.public_values,
+            beta_powers: self.beta_powers,
+            gamma_powers: self.gamma_powers,
             alpha_powers: self.alpha_powers,
+            eq_r_helper,
+            eq_z_fs_helper,
             starting_round: max_regular_rounds - regular_rounds,
-            claim,
+            zero_check_claim,
+            eval_check_claim,
             trace,
             is_first_row: IsFirstRow(sels.is_first_row),
             is_last_row: IsLastRow(sels.is_last_row),
             is_transition: IsTransition(sels.is_transition),
-            round_poly: Default::default(),
+            zero_check_round_poly: Default::default(),
+            eval_check_round_poly: Default::default(),
+            eq_r_z_eval: Challenge::ONE,
+            eq_z_fs_z_eval: Challenge::ONE,
         }
     }
 
@@ -178,54 +213,90 @@ where
             round_poly: Default::default(),
         }
     }
-}
 
-#[allow(clippy::too_many_arguments)]
-fn compute_quotient_values<Val, Challenge, A>(
-    meta: AirMeta,
-    air: &A,
-    public_values: &[Val],
-    trace: RowMajorMatrixView<Val::Packing>,
-    alpha_powers: &[Challenge],
-    sels: &LagrangeSelectors<Vec<Val>>,
-    added_bits: usize,
-    is_first_chunk: bool,
-    is_last_chunk: bool,
-) -> Vec<Challenge::ExtensionPacking>
-where
-    Val: TwoAdicField + Ord,
-    Challenge: ExtensionField<Val>,
-    A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>,
-{
-    let trace_lde = {
-        let values = Val::Packing::unpack_slice(trace.values);
-        let mut lde = RowMajorMatrix::new(
-            Vec::with_capacity(values.len() << added_bits),
-            trace.width() * Val::Packing::WIDTH,
-        );
-        lde.values.extend(cloned(values));
-        Radix2DitParallel::default().coset_lde_batch(lde, added_bits, Val::GENERATOR)
-    };
-    (0..trace_lde.height())
-        .into_par_iter()
-        .map(|row| {
-            let row_slice = trace_lde.row_slice(row).unwrap();
-            let main = RowMajorMatrixView::new(Val::Packing::pack_slice(&row_slice), meta.width);
-            let sels = selectors_at_row(sels, is_first_chunk, is_last_chunk, row);
-            let mut folder = ProverConstraintFolderGeneric {
-                main,
-                public_values,
-                is_first_row: sels.is_first_row,
-                is_last_row: sels.is_last_row,
-                is_transition: sels.is_transition,
-                alpha_powers,
-                accumulator: Challenge::ExtensionPacking::ZERO,
-                constraint_index: 0,
-            };
-            air.eval(&mut folder);
-            folder.accumulator * sels.inv_vanishing
-        })
-        .collect()
+    #[allow(clippy::too_many_arguments)]
+    fn compute_chunk_values(
+        &self,
+        zero_check_values: &mut [Challenge::ExtensionPacking],
+        eval_check_values: &mut [Challenge::ExtensionPacking],
+        trace: RowMajorMatrixView<Val::Packing>,
+        eq_r_eval: Challenge::ExtensionPacking,
+        eq_z_fs_eval: Challenge::ExtensionPacking,
+        sels: &LagrangeSelectors<Vec<Val>>,
+        added_bits: usize,
+        is_first_chunk: bool,
+        is_last_chunk: bool,
+    ) where
+        Val: TwoAdicField + Ord,
+        Challenge: ExtensionField<Val>,
+        A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>,
+    {
+        let trace_lde = {
+            let values = Val::Packing::unpack_slice(trace.values);
+            let mut lde = RowMajorMatrix::new(
+                Vec::with_capacity(values.len() << added_bits),
+                trace.width() * Val::Packing::WIDTH,
+            );
+            lde.values.extend(cloned(values));
+            Radix2DitParallel::default().coset_lde_batch(lde, added_bits, Val::GENERATOR)
+        };
+        if self.meta.has_interaction() {
+            zero_check_values
+                .par_iter_mut()
+                .zip(eval_check_values)
+                .enumerate()
+                .for_each(|(row, (zero_check, eval_check))| {
+                    let (zero_check_accumulator, eval_check_accumulator) =
+                        self.eval(&trace_lde, sels, row, is_first_chunk, is_last_chunk);
+                    *zero_check += zero_check_accumulator * eq_r_eval;
+                    *eval_check += eval_check_accumulator * eq_z_fs_eval;
+                });
+        } else {
+            zero_check_values
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(row, zero_check)| {
+                    let (zero_check_accumulator, _) =
+                        self.eval(&trace_lde, sels, row, is_first_chunk, is_last_chunk);
+                    *zero_check += zero_check_accumulator * eq_r_eval;
+                });
+        }
+    }
+
+    fn eval(
+        &self,
+        trace_lde: &impl Matrix<Val>,
+        sels: &LagrangeSelectors<Vec<Val>>,
+        row: usize,
+        is_first_chunk: bool,
+        is_last_chunk: bool,
+    ) -> (Challenge::ExtensionPacking, Challenge::ExtensionPacking) {
+        let row_slice = trace_lde.row_slice(row).unwrap();
+        let main = RowMajorMatrixView::new(Val::Packing::pack_slice(&row_slice), self.meta.width);
+        let sels = selectors_at_row(sels, is_first_chunk, is_last_chunk, row);
+        let (zero_check_alpha_powers, eval_check_alpha_powers) =
+            self.alpha_powers.split_at(self.meta.constraint_count);
+        let mut folder = ProverConstraintFolderGeneric {
+            main,
+            public_values: self.public_values,
+            is_first_row: sels.is_first_row,
+            is_last_row: sels.is_last_row,
+            is_transition: sels.is_transition,
+            beta_powers: self.beta_powers,
+            gamma_powers: self.gamma_powers,
+            zero_check_alpha_powers,
+            eval_check_alpha_powers,
+            zero_check_accumulator: Challenge::ExtensionPacking::ZERO,
+            eval_check_accumulator: Challenge::ExtensionPacking::ZERO,
+            constraint_index: 0,
+            interaction_index: 0,
+        };
+        self.air.eval(&mut folder);
+        (
+            folder.zero_check_accumulator * sels.inv_vanishing,
+            folder.eval_check_accumulator,
+        )
+    }
 }
 
 #[inline]
@@ -295,4 +366,15 @@ pub(crate) fn lagrange_evals<Val: TwoAdicField, Challenge: ExtensionField<Val>>(
         .zip(diff_invs)
         .map(|(x, diff_inv)| vanishing_over_height * diff_inv * x)
         .collect()
+}
+
+pub(crate) fn evaluations_on_domain<Val: TwoAdicField + Ord, Challenge: ExtensionField<Val>>(
+    skip_rounds: usize,
+    poly: &RoundPoly<Challenge>,
+) -> Vec<Challenge> {
+    let mut coeffs = vec![Challenge::ZERO; 1 << skip_rounds];
+    poly.0
+        .chunks(1 << skip_rounds)
+        .for_each(|chunk| coeffs[..chunk.len()].slice_add_assign(chunk));
+    Radix2DitParallel::default().dft_algebra(coeffs)
 }

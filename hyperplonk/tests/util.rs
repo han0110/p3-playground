@@ -1,11 +1,12 @@
+use itertools::Itertools;
 use p3_air::{Air, BaseAirWithPublicValues};
-use p3_air_ext::ProverInteractionFolderOnPacking;
 use p3_challenger::{FieldChallenger, HashChallenger, SerializingChallenger32};
 use p3_field::{ExtensionField, PrimeField32, TwoAdicField};
 use p3_hyperplonk::{
     ProverConstraintFolderOnExtension, ProverConstraintFolderOnExtensionPacking,
-    ProverConstraintFolderOnPacking, ProverInput, SymbolicAirBuilder, VerifierConstraintFolder,
-    prove, verify,
+    ProverConstraintFolderOnPacking, ProverInput, ProverInteractionFolderOnExtension,
+    ProverInteractionFolderOnPacking, SymbolicAirBuilder, VerifierConstraintFolder, keygen, prove,
+    verify,
 };
 use p3_keccak::Keccak256Hash;
 
@@ -23,6 +24,7 @@ pub fn run<
     A: Clone
         + BaseAirWithPublicValues<Val>
         + Air<SymbolicAirBuilder<Val>>
+        + for<'t> Air<ProverInteractionFolderOnExtension<'t, Val, Challenge>>
         + for<'t> Air<ProverInteractionFolderOnPacking<'t, Val, Challenge>>
         + for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
         + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
@@ -32,13 +34,15 @@ pub fn run<
     let verifier_inputs = prover_inputs
         .iter()
         .map(|input| input.to_verifier_input())
-        .collect();
+        .collect_vec();
+
+    let (vk, pk) = keygen(verifier_inputs.iter().map(|input| input.air()));
 
     let mut prover_challenger = Challenger::<Val>::from_hasher(Vec::new(), Keccak256Hash {});
-    let proof = prove(prover_inputs, &mut prover_challenger);
+    let proof = prove(&pk, prover_inputs, &mut prover_challenger);
 
     let mut verifier_challenger = Challenger::<Val>::from_hasher(Vec::new(), Keccak256Hash {});
-    verify::<_, Challenge, _>(verifier_inputs, &proof, &mut verifier_challenger).unwrap();
+    verify::<_, Challenge, _>(&vk, verifier_inputs, &proof, &mut verifier_challenger).unwrap();
 
     assert_eq!(
         prover_challenger.sample_algebra_element::<Challenge>(),

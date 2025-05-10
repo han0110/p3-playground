@@ -1,7 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use itertools::{enumerate, izip, rev, zip_eq};
+use itertools::{cloned, enumerate, rev, zip_eq};
 use p3_field::{
     Algebra, ExtensionField, Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing,
 };
@@ -11,39 +11,59 @@ use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
 use tracing::instrument;
 
-pub(crate) fn horner<'a, F: Field>(
-    coeffs: impl IntoIterator<IntoIter: DoubleEndedIterator, Item = &'a F>,
-    x: F,
-) -> F {
-    rev(coeffs.into_iter().copied())
-        .reduce(|acc, coeff| acc * x + coeff)
-        .unwrap_or_default()
+pub(crate) fn random_linear_combine<'a, EF: Field>(
+    values: impl IntoIterator<Item = &'a EF>,
+    r: EF,
+) -> EF {
+    cloned(values).fold(EF::ZERO, |acc, value| acc * r + value)
 }
 
-pub(crate) fn eq_poly_packed<F: Field, E: ExtensionField<F>>(r: &[E]) -> Vec<E::ExtensionPacking> {
+pub(crate) fn evaluate_uv_poly<'a, F: Field, EF: ExtensionField<F>>(
+    coeffs: impl IntoIterator<IntoIter: DoubleEndedIterator, Item = &'a F>,
+    x: EF,
+) -> EF {
+    rev(cloned(coeffs)).fold(EF::ZERO, |acc, coeff| acc * x + coeff)
+}
+
+pub fn evaluate_ml_poly<F: Field, EF: ExtensionField<F>>(evals: &[F], z: &[EF]) -> EF {
+    match z {
+        [] => EF::from(evals[0]),
+        [z_0] => *z_0 * (evals[1] - evals[0]) + evals[0],
+        &[ref z @ .., z_i] => {
+            let (lo, hi) = evals.split_at(evals.len() / 2);
+            let (lo, hi) = join(|| evaluate_ml_poly(lo, z), || evaluate_ml_poly(hi, z));
+            z_i * (hi - lo) + lo
+        }
+    }
+}
+
+pub(crate) fn eq_poly_packed<F: Field, EF: ExtensionField<F>>(
+    r: &[EF],
+) -> Vec<EF::ExtensionPacking> {
     let log_packing_width = log2_strict_usize(F::Packing::WIDTH);
     let (r_lo, r_hi) = r.split_at(r.len().saturating_sub(log_packing_width));
-    let mut eq_r_hi = eq_poly(r_hi, E::ONE);
-    eq_r_hi.resize(F::Packing::WIDTH, E::ZERO);
-    eq_poly(r_lo, E::ExtensionPacking::from_ext_slice(&eq_r_hi))
+    let mut eq_r_hi = eq_poly(r_hi, EF::ONE);
+    eq_r_hi.resize(F::Packing::WIDTH, EF::ZERO);
+    eq_poly(r_lo, EF::ExtensionPacking::from_ext_slice(&eq_r_hi))
 }
 
 #[instrument(level = "debug", skip_all, fields(log_h = %r.len()))]
-pub fn eq_poly<F: Field, VarEF: Copy + Send + Sync + Algebra<F>>(
-    r: &[F],
-    scalar: VarEF,
-) -> Vec<VarEF> {
+pub fn eq_poly<EF, VarEF>(r: &[EF], scalar: VarEF) -> Vec<VarEF>
+where
+    EF: Field,
+    VarEF: Copy + Send + Sync + Algebra<EF>,
+{
     let mut evals = vec![VarEF::ZERO; 1 << r.len()];
     evals[0] = scalar;
     enumerate(r).for_each(|(i, r_i)| eq_expand(&mut evals, *r_i, i));
     evals
 }
 
-pub(crate) fn eq_expand<F: Field, VarEF: Copy + Send + Sync + Algebra<F>>(
-    evals: &mut [VarEF],
-    x_i: F,
-    i: usize,
-) {
+pub(crate) fn eq_expand<EF, VarEF>(evals: &mut [VarEF], x_i: EF, i: usize)
+where
+    EF: Field,
+    VarEF: Copy + Send + Sync + Algebra<EF>,
+{
     let (lo, hi) = evals[..2 << i].split_at_mut(1 << i);
     lo.par_iter_mut().zip(hi).for_each(|(lo, hi)| {
         *hi = *lo * x_i;
@@ -51,25 +71,25 @@ pub(crate) fn eq_expand<F: Field, VarEF: Copy + Send + Sync + Algebra<F>>(
     });
 }
 
-pub fn eq_eval<'a, F: Field>(
-    x: impl IntoIterator<Item = &'a F>,
-    y: impl IntoIterator<Item = &'a F>,
-) -> F {
-    F::product(zip_eq(x, y).map(|(&x, &y)| (x * y).double() + F::ONE - x - y))
+pub fn eq_eval<'a, EF: Field>(
+    x: impl IntoIterator<Item = &'a EF>,
+    y: impl IntoIterator<Item = &'a EF>,
+) -> EF {
+    EF::product(zip_eq(x, y).map(|(&x, &y)| (x * y).double() + EF::ONE - x - y))
 }
 
 #[instrument(level = "debug", skip_all, fields(log_h = %mat.height().ilog2()))]
-pub(crate) fn fix_var<F, EF>(mat: RowMajorMatrixView<F>, z_i: EF) -> RowMajorMatrix<EF>
+pub(crate) fn fix_var<Var, VarEF>(mat: RowMajorMatrixView<Var>, z_i: VarEF) -> RowMajorMatrix<VarEF>
 where
-    F: Copy + Send + Sync + PrimeCharacteristicRing,
-    EF: Copy + Send + Sync + Algebra<F>,
+    Var: Copy + Send + Sync + PrimeCharacteristicRing,
+    VarEF: Copy + Send + Sync + Algebra<Var>,
 {
     RowMajorMatrix::new(
         mat.par_row_chunks(2)
             .flat_map(|rows| {
-                rows.values[..mat.width()]
-                    .into_par_iter()
-                    .zip(&rows.values[mat.width()..])
+                let (lo, hi) = rows.values.split_at(mat.width());
+                lo.into_par_iter()
+                    .zip(hi)
                     .map(|(lo, hi)| z_i * (*hi - *lo) + *lo)
             })
             .collect(),
@@ -77,12 +97,12 @@ where
     )
 }
 
-pub(crate) trait PackedExtensionValue<F: Field, E: ExtensionField<F, ExtensionPacking = Self>>:
-    PackedFieldExtension<F, E> + Sync + Send
+pub(crate) trait PackedExtensionValue<F: Field, EF: ExtensionField<F, ExtensionPacking = Self>>:
+    PackedFieldExtension<F, EF> + Sync + Send
 {
     #[inline]
-    fn ext_sum(&self) -> E {
-        E::from_basis_coefficients_fn(|i| {
+    fn ext_sum(&self) -> EF {
+        EF::from_basis_coefficients_fn(|i| {
             self.as_basis_coefficients_slice()[i]
                 .as_slice()
                 .iter()
@@ -92,18 +112,28 @@ pub(crate) trait PackedExtensionValue<F: Field, E: ExtensionField<F, ExtensionPa
     }
 }
 
-impl<F, E, T> PackedExtensionValue<F, E> for T
+impl<F, EF, T> PackedExtensionValue<F, EF> for T
 where
     F: Field,
-    E: ExtensionField<F, ExtensionPacking = T>,
-    T: PackedFieldExtension<F, E> + Sync + Send,
+    EF: ExtensionField<F, ExtensionPacking = T>,
+    T: PackedFieldExtension<F, EF> + Sync + Send,
 {
+}
+
+pub trait RSlice<T> {
+    fn rslice(&self, len: usize) -> &[T];
+}
+
+impl<T> RSlice<T> for [T] {
+    fn rslice(&self, len: usize) -> &[T] {
+        &self[self.len() - len..]
+    }
 }
 
 pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
     #[inline]
     fn slice_assign_iter(&mut self, rhs: impl IntoIterator<Item = F>) {
-        izip!(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs = rhs);
+        zip_eq(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs = rhs);
     }
 
     #[inline]
@@ -113,7 +143,7 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
 
     #[inline]
     fn slice_add_assign(&mut self, rhs: &[F]) {
-        izip!(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs += *rhs);
+        zip_eq(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs += *rhs);
     }
 
     #[inline]
@@ -122,12 +152,13 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
         lhs: impl IntoIterator<Item = F>,
         rhs: impl IntoIterator<Item = F>,
     ) {
-        izip!(self.as_mut(), lhs, rhs).for_each(|(out, lhs, rhs): (&mut F, _, _)| *out = lhs - rhs);
+        zip_eq(self.as_mut(), zip_eq(lhs, rhs))
+            .for_each(|(out, (lhs, rhs)): (&mut _, _)| *out = lhs - rhs);
     }
 
     #[inline]
     fn slice_sub_assign(&mut self, rhs: &[F]) {
-        izip!(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs -= *rhs);
+        zip_eq(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs -= *rhs);
     }
 
     #[inline]
@@ -136,7 +167,7 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
         F: Algebra<S>,
         S: Copy + Algebra<R>,
     {
-        izip!(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs += scalar * rhs);
+        zip_eq(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs += scalar * rhs);
     }
 
     #[inline]
@@ -145,7 +176,7 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
         F: Algebra<S>,
         S: Copy + Algebra<R>,
     {
-        izip!(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs -= scalar * rhs);
+        zip_eq(self.as_mut(), rhs).for_each(|(lhs, rhs)| *lhs -= scalar * rhs);
     }
 }
 
@@ -154,5 +185,15 @@ impl<F: Copy + PrimeCharacteristicRing> FieldSlice<F> for [F] {}
 #[inline]
 pub(crate) fn vec_add<F: Copy + PrimeCharacteristicRing>(mut lhs: Vec<F>, rhs: Vec<F>) -> Vec<F> {
     lhs.slice_add_assign(&rhs);
+    lhs
+}
+
+#[inline]
+pub(crate) fn vec_pair_add<F: Copy + PrimeCharacteristicRing>(
+    mut lhs: (Vec<F>, Vec<F>),
+    rhs: (Vec<F>, Vec<F>),
+) -> (Vec<F>, Vec<F>) {
+    lhs.0.slice_add_assign(&rhs.0);
+    lhs.1.slice_add_assign(&rhs.1);
     lhs
 }

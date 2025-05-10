@@ -2,7 +2,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 use p3_air::{Air, AirBuilder, BaseAir, BaseAirWithPublicValues};
 use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_field::extension::BinomialExtensionField;
-use p3_hyperplonk::{ProverInput, prove};
+use p3_hyperplonk::{ProverInput, keygen, prove};
 use p3_keccak::Keccak256Hash;
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_poseidon2_air::{RoundConstants, generate_trace_rows, num_cols};
@@ -56,7 +56,8 @@ fn bench(c: &mut Criterion) {
 
     let mut rng = StdRng::from_os_rng();
     let round_constants = RoundConstants::from_rng(&mut rng);
-    let air = Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
+    let air = &Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
+    let (_, pk) = keygen([&air]);
 
     for num_vars in 19..22 {
         group.bench_with_input(
@@ -79,9 +80,9 @@ fn bench(c: &mut Criterion) {
                 b.iter_batched(
                     || trace.clone(),
                     |trace| {
-                        let prover_inputs = vec![ProverInput::new(&air, Vec::new(), trace.clone())];
+                        let prover_inputs = vec![ProverInput::new(air, Vec::new(), trace.clone())];
                         let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
-                        prove::<_, Challenge, _>(prover_inputs, challenger);
+                        prove::<_, Challenge, _>(&pk, prover_inputs, challenger);
                     },
                     BatchSize::LargeInput,
                 );

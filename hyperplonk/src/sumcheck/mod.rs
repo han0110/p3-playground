@@ -10,13 +10,14 @@ use p3_field::{
     batch_multiplicative_inverse, dot_product,
 };
 use p3_matrix::Matrix;
-use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
+use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
 use tracing::info_span;
 
 use crate::{
     CompressedRoundPoly, FieldSlice, PackedExtensionValue, RoundPoly, eq_poly_packed, fix_var,
+    vec_add,
 };
 
 mod eval;
@@ -41,7 +42,18 @@ impl<Challenge: Field> RoundPoly<Challenge> {
         )
     }
 
-    pub(crate) fn into_compressed(mut self) -> CompressedRoundPoly<Challenge> {
+    fn mul_by_scaled_eq(&self, scalar: Challenge, r_i: Challenge) -> Self {
+        let eq = [Challenge::ONE - r_i, r_i.double() - Challenge::ONE];
+        let scaled_eq = eq.map(|coeff| coeff * scalar);
+        let mut out = vec![Challenge::ZERO; self.0.len() + 1];
+        self.0.iter().enumerate().for_each(|(idx, coeff)| {
+            out[idx] += *coeff * scaled_eq[0];
+            out[idx + 1] += *coeff * scaled_eq[1];
+        });
+        Self(out)
+    }
+
+    fn into_compressed(mut self) -> CompressedRoundPoly<Challenge> {
         if self.0.len() > 1 {
             self.0.remove(1);
         }
@@ -108,21 +120,19 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge
         }
     }
 
-    pub(crate) fn evals_packed(
-        &self,
-        round: usize,
-    ) -> impl IndexedParallelIterator<Item = Challenge::ExtensionPacking> {
-        self.evals.par_iter().step_by(1 << round).copied()
+    fn r_i(&self, round: usize) -> Challenge {
+        self.r[round]
     }
 
-    fn evals(&self, round: usize) -> impl IndexedParallelIterator<Item = Challenge> {
+    fn eval_packed(&self, round: usize, idx: usize) -> Challenge::ExtensionPacking {
+        self.evals[idx << round]
+    }
+
+    fn eval(&self, round: usize, idx: usize) -> Challenge {
         let len = min(Val::Packing::WIDTH, 1 << self.r.len().saturating_sub(1));
         let step = len >> (self.r.len().saturating_sub(1 + round));
-        let eval = self.evals[0];
-        (0..len).into_par_iter().step_by(step).map(move |i| {
-            Challenge::from_basis_coefficients_fn(|j| {
-                eval.as_basis_coefficients_slice()[j].as_slice()[i]
-            })
+        Challenge::from_basis_coefficients_fn(|j| {
+            self.evals[0].as_basis_coefficients_slice()[j].as_slice()[step * idx]
         })
     }
 
@@ -141,8 +151,14 @@ pub(crate) enum AirTrace<Val: Field, Challenge: ExtensionField<Val>> {
     Extension(RowMajorMatrix<Challenge>),
 }
 
+impl<Val: Field, Challenge: ExtensionField<Val>> Default for AirTrace<Val, Challenge> {
+    fn default() -> Self {
+        Self::Extension(RowMajorMatrix::new(Vec::new(), 0))
+    }
+}
+
 impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
-    pub(crate) fn new(trace: RowMajorMatrixView<Val>) -> Self {
+    pub(crate) fn new(trace: impl Matrix<Val>) -> Self {
         const WINDOW: usize = 2;
         let width = trace.width();
         let height = trace.height();
@@ -150,8 +166,9 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
         let log_packing_width = log2_strict_usize(Val::Packing::WIDTH);
         if log_height > log_packing_width {
             let trace = info_span!("pack trace local and next together").in_scope(|| {
-                let len = trace.values.len();
+                let len = width * height;
                 let packed_len = len >> log_packing_width;
+                let packed_height = height >> log_packing_width;
                 RowMajorMatrix::new(
                     (0..WINDOW * packed_len)
                         .into_par_iter()
@@ -159,9 +176,15 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
                             let row = (i / width) / WINDOW;
                             let rot = (i / width) % WINDOW;
                             let col = i % width;
-                            Val::Packing::from_fn(|j| {
-                                trace.values[((row + rot) * width + col + j * packed_len) % len]
-                            })
+                            // SAFETY: row and column are mod by height and width respectively.
+                            unsafe {
+                                Val::Packing::from_fn(|j| {
+                                    trace.get_unchecked(
+                                        (row + rot + j * packed_height) % height,
+                                        col,
+                                    )
+                                })
+                            }
                         })
                         .collect(),
                     WINDOW * width,
@@ -169,7 +192,7 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
             });
             Self::Packing(trace)
         } else {
-            let len = trace.values.len();
+            let len = width * height;
             let trace = RowMajorMatrix::new(
                 (0..WINDOW * len)
                     .into_par_iter()
@@ -177,7 +200,8 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
                         let row = (i / width) / WINDOW;
                         let rot = (i / width) % WINDOW;
                         let col = i % width;
-                        Challenge::from(trace.values[((row + rot) * width + col) % len])
+                        // SAFETY: row and column are mod by height and width respectively.
+                        Challenge::from(unsafe { trace.get_unchecked((row + rot) % height, col) })
                     })
                     .collect(),
                 WINDOW * width,
@@ -191,6 +215,60 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
             AirTrace::Extension(unpack_row(&trace.values))
         } else {
             AirTrace::ExtensionPacking(trace)
+        }
+    }
+
+    pub(crate) fn log_height(&self) -> usize {
+        match self {
+            Self::Packing(trace) => {
+                log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
+            }
+            Self::ExtensionPacking(trace) => {
+                log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
+            }
+            Self::Extension(trace) => log2_strict_usize(trace.height()),
+        }
+    }
+
+    pub(crate) fn columnwise_dot_product(&self, scalars: &[Challenge]) -> Vec<Challenge> {
+        assert_eq!(1 << self.log_height(), scalars.len());
+
+        macro_rules! columnwise_dot_product_packed {
+            ($trace:ident) => {{
+                let scalars_packed = {
+                    let packed_len = scalars.len() / Val::Packing::WIDTH;
+                    (0..packed_len)
+                        .into_par_iter()
+                        .map(|i| {
+                            Challenge::ExtensionPacking::from_basis_coefficients_fn(|j| {
+                                Val::Packing::from_fn(|k| {
+                                    scalars[i + k * packed_len].as_basis_coefficients_slice()[j]
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                };
+                $trace
+                    .par_rows()
+                    .zip(scalars_packed)
+                    .par_fold_reduce(
+                        || Challenge::ExtensionPacking::zero_vec($trace.width()),
+                        |mut acc, (row, scalar)| {
+                            acc.slice_add_assign_scaled_iter(row, scalar);
+                            acc
+                        },
+                        vec_add,
+                    )
+                    .into_iter()
+                    .map(|eval| eval.ext_sum())
+                    .collect()
+            }};
+        }
+
+        match self {
+            Self::Packing(trace) => columnwise_dot_product_packed!(trace),
+            Self::ExtensionPacking(trace) => columnwise_dot_product_packed!(trace),
+            Self::Extension(trace) => trace.columnwise_dot_product(scalars),
         }
     }
 
@@ -253,18 +331,6 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
                 Self::Extension(fixed)
             }
             _ => unimplemented!(),
-        }
-    }
-
-    fn log_height(&self) -> usize {
-        match self {
-            Self::Packing(trace) => {
-                log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
-            }
-            Self::ExtensionPacking(trace) => {
-                log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
-            }
-            Self::Extension(trace) => log2_strict_usize(trace.height()),
         }
     }
 }
