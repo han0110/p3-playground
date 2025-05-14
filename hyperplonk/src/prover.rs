@@ -1,25 +1,24 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
-use core::mem::transmute;
 
-use itertools::{Itertools, chain, cloned, izip};
+use itertools::{Itertools, chain, cloned, izip, rev};
 use p3_air::Air;
 use p3_air_ext::{ProverInput, VerifierInput};
 use p3_challenger::FieldChallenger;
-use p3_field::{ExtensionField, PackedValue, PrimeCharacteristicRing, TwoAdicField, dot_product};
+use p3_field::{ExtensionField, Field, PackedValue, TwoAdicField, dot_product};
 use p3_matrix::Matrix;
-use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
-use p3_maybe_rayon::prelude::*;
+use p3_matrix::dense::DenseMatrix;
 use p3_util::log2_strict_usize;
-use tracing::instrument;
+use tracing::{info_span, instrument};
 
 use crate::{
-    AirProof, AirTrace, BatchSumcheckProof, CompressedRoundPoly, EqHelper, FractionalSumProof,
-    PiopProof, Proof, ProverConstraintFolderOnExtension, ProverConstraintFolderOnExtensionPacking,
-    ProverConstraintFolderOnPacking, ProverInteractionFolderOnExtension,
-    ProverInteractionFolderOnPacking, ProvingKey, RSlice, RegularSumcheckProver,
-    UnivariateSkipProof, UnivariateSkipProver, eq_poly,
+    AirProof, AirRegularProver, AirUnivariateSkipProof, AirUnivariateSkipProver,
+    BatchSumcheckProof, CompressedRoundPoly, EqHelper, EvalClaim, FractionalSumProof,
+    FractionalSumRegularProver, PiopProof, Proof, ProverConstraintFolderOnExtension,
+    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking,
+    ProverInteractionFolderOnExtension, ProverInteractionFolderOnPacking, ProvingKey, RSlice,
+    Trace, fix_var, fractional_sum_layers, fractional_sum_trace,
 };
 
 #[instrument(skip_all)]
@@ -43,10 +42,10 @@ where
         + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
         + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
+    debug_assert!(!inputs.is_empty());
+
     #[cfg(feature = "check-constraints")]
     crate::check_constraints(&inputs);
-
-    assert!(!inputs.is_empty());
 
     let (inputs, traces) = inputs.into_iter().map_into().collect::<(Vec<_>, Vec<_>)>();
     let log_heights = traces
@@ -74,9 +73,9 @@ where
         .enumerate()
         .for_each(|(idx, (meta, trace, univariate_skip, z))| {
             let evals = if univariate_skip.skip_rounds > 0 {
-                &piop.air.univariate_eval_sumcheck.evals[idx]
+                &piop.air.univariate_eval_check.evals[idx]
             } else {
-                &piop.air.regular_sumcheck.evals[idx]
+                &piop.air.regular.evals[idx]
             };
             let (local, next) = evals.split_at(meta.width);
             let mut eq_z = crate::eq_poly(z, Challenge::ONE);
@@ -103,10 +102,8 @@ where
         + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
         + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
 {
-    let traces = traces
-        .into_par_iter()
-        .map(AirTrace::new)
-        .collect::<Vec<_>>();
+    let traces = info_span!("pack traces")
+        .in_scope(|| traces.into_iter().map(Trace::new).collect::<Vec<_>>());
 
     let beta: Challenge = challenger.sample_algebra_element();
     let gamma: Challenge = challenger.sample_algebra_element();
@@ -121,7 +118,7 @@ where
         .take(pk.max_bus_index() + 1)
         .collect_vec();
 
-    let (z_fs, fractional_sum) = prove_fractional_sum::<Val, Challenge, _>(
+    let (claims_fs, fractional_sum) = prove_fractional_sum::<Val, Challenge, _>(
         pk,
         inputs,
         &traces,
@@ -129,11 +126,6 @@ where
         &gamma_powers,
         &mut challenger,
     );
-    let claims_fs = fractional_sum
-        .sumchecks
-        .last()
-        .map(|sumcheck| sumcheck.evals.as_slice())
-        .unwrap_or(&[]);
 
     let (zs, air) = prove_air(
         pk,
@@ -141,8 +133,7 @@ where
         traces,
         &beta_powers,
         &gamma_powers,
-        &z_fs,
-        claims_fs,
+        &claims_fs,
         &mut challenger,
     );
 
@@ -155,133 +146,154 @@ where
     )
 }
 
+#[instrument(skip_all)]
 fn prove_fractional_sum<Val, Challenge, A>(
     pk: &ProvingKey,
     inputs: &[VerifierInput<Val, A>],
-    traces: &[AirTrace<Val, Challenge>],
+    traces: &[Trace<Val, Challenge>],
     beta_powers: &[Challenge],
     gamma_powers: &[Challenge],
     mut challenger: impl FieldChallenger<Val>,
-) -> (Vec<Challenge>, FractionalSumProof<Challenge>)
+) -> (Vec<EvalClaim<Challenge>>, FractionalSumProof<Challenge>)
 where
-    Val: TwoAdicField + Ord,
+    Val: Field,
     Challenge: ExtensionField<Val>,
     A: for<'t> Air<ProverInteractionFolderOnPacking<'t, Val, Challenge>>
         + for<'t> Air<ProverInteractionFolderOnExtension<'t, Val, Challenge>>,
 {
-    // TODO: Prove fractional-sum check and get real z and evals.
+    if !pk.has_any_interaction() {
+        return (
+            vec![Default::default(); pk.metas().len()],
+            Default::default(),
+        );
+    }
 
-    let trace_fs = izip!(pk.metas(), inputs, traces)
+    let (mut layers, sums) = izip!(pk.metas(), inputs, traces)
         .map(|(meta, input, trace)| {
-            if meta.interaction_count == 0 {
-                return AirTrace::default();
-            }
+            fractional_sum_trace(meta, input, trace, beta_powers, gamma_powers)
+                .map(|input_layer| fractional_sum_layers(meta.interaction_count, input_layer))
+                .unwrap_or_default()
+        })
+        .collect::<(Vec<_>, Vec<_>)>();
 
-            match trace {
-                AirTrace::Packing(trace) => {
-                    let width = (1 + Challenge::DIMENSION) * meta.interaction_count;
-                    let mut trace_fs = RowMajorMatrix::new(
-                        vec![Val::Packing::ZERO; width * trace.height()],
-                        width,
-                    );
-                    trace_fs
-                        .par_rows_mut()
-                        .zip(trace.par_row_slices())
-                        .for_each(|(row_fs, row)| {
-                            let (numers, denoms) = row_fs.split_at_mut(meta.interaction_count);
-                            let denoms = unsafe {
-                                transmute::<&mut [_], &mut [Challenge::ExtensionPacking]>(denoms)
-                            };
-                            let mut builder = ProverInteractionFolderOnPacking {
-                                main: RowMajorMatrixView::new(row, meta.width),
-                                public_values: input.public_values(),
-                                beta_powers,
-                                gamma_powers,
-                                numers,
-                                denoms,
-                                interaction_index: 0,
-                            };
-                            input.air().eval(&mut builder);
-                        });
-                    AirTrace::Packing(trace_fs)
-                }
-                AirTrace::Extension(trace) => {
-                    let mut trace_fs = RowMajorMatrix::new(
-                        vec![Challenge::ZERO; 2 * meta.interaction_count * trace.height()],
-                        2 * meta.interaction_count,
-                    );
-                    trace_fs
-                        .par_rows_mut()
-                        .zip(trace.par_row_slices())
-                        .for_each(|(row_fs, row)| {
-                            let (numers, denoms) = row_fs.split_at_mut(meta.interaction_count);
-                            let mut builder = ProverInteractionFolderOnExtension {
-                                main: RowMajorMatrixView::new(row, meta.width),
-                                public_values: input.public_values(),
-                                beta_powers,
-                                gamma_powers,
-                                numers,
-                                denoms,
-                                interaction_index: 0,
-                            };
-                            input.air().eval(&mut builder);
-                        });
-                    AirTrace::Extension(trace_fs)
-                }
-                _ => unimplemented!(),
-            }
+    sums.iter().flatten().for_each(|frac| {
+        challenger.observe_algebra_element(frac.numer);
+        challenger.observe_algebra_element(frac.denom);
+    });
+
+    let max_interaction_count = pk.max_interaction_count();
+    let max_log_height = itertools::max(traces.iter().map(|trace| trace.log_height())).unwrap();
+
+    let mut claims = sums
+        .iter()
+        .map(|sums| EvalClaim {
+            z: Vec::new(),
+            evals: sums
+                .iter()
+                .flat_map(|sum| [sum.numer, sum.denom])
+                .collect_vec(),
         })
         .collect_vec();
+    let layers = (0..max_log_height)
+        .map(|rounds| {
+            let alpha: Challenge = challenger.sample_algebra_element();
+            let beta: Challenge = challenger.sample_algebra_element();
+            let alpha_powers = {
+                let mut alpha_powers = alpha.powers().take(2 * max_interaction_count).collect_vec();
+                alpha_powers.reverse();
+                alpha_powers
+            };
 
-    let z = (0..itertools::max(traces.iter().map(|trace| trace.log_height())).unwrap())
-        .map(|_| challenger.sample_algebra_element())
-        .collect_vec();
+            let mut provers = izip!(pk.metas(), &mut layers, &claims)
+                .map(|(meta, layers, claim)| {
+                    layers.pop().map(|layer| {
+                        let alpha_powers = alpha_powers.rslice(2 * meta.interaction_count);
+                        FractionalSumRegularProver::new(
+                            meta.interaction_count,
+                            dot_product(cloned(&claim.evals), cloned(alpha_powers)),
+                            layer,
+                            alpha_powers,
+                            &claim.z,
+                        )
+                    })
+                })
+                .collect_vec();
 
-    let evals = izip!(pk.metas(), trace_fs)
-        .map(|(meta, trace_fs)| {
-            if meta.interaction_count == 0 {
-                return Vec::new();
-            }
+            let (mut z, layer) = {
+                let (z, compressed_round_polys) = rev(0..rounds)
+                    .map(|log_b| {
+                        let compressed_round_polys = provers
+                            .iter_mut()
+                            .map(|prover| {
+                                prover
+                                    .as_mut()
+                                    .map(|prover| prover.compute_round_poly(log_b))
+                                    .unwrap_or_default()
+                            })
+                            .collect_vec();
 
-            let eq_z = eq_poly(z.rslice(trace_fs.log_height()), Challenge::ONE);
-            let evals = trace_fs.columnwise_dot_product(&eq_z);
-            if let AirTrace::Packing(_) = trace_fs {
-                let (numers, denoms) = evals.split_at(meta.interaction_count);
-                chain![
-                    cloned(numers),
-                    denoms.chunks(Challenge::DIMENSION).map(|chunk| dot_product(
-                        cloned(chunk),
-                        (0..Challenge::DIMENSION).map(|i| Challenge::ith_basis_element(i).unwrap())
-                    ))
-                ]
-                .collect()
-            } else {
-                evals
-            }
+                        let compressed_round_poly = CompressedRoundPoly::random_linear_combine(
+                            compressed_round_polys,
+                            beta,
+                        );
+
+                        cloned(&compressed_round_poly.0)
+                            .for_each(|coeff| challenger.observe_algebra_element(coeff));
+                        let z_i = challenger.sample_algebra_element();
+
+                        provers.iter_mut().for_each(|prover| {
+                            if let Some(prover) = prover.as_mut() {
+                                prover.fix_var(log_b, z_i)
+                            }
+                        });
+
+                        (z_i, compressed_round_poly)
+                    })
+                    .collect::<(Vec<_>, Vec<_>)>();
+
+                let evals = provers
+                    .into_iter()
+                    .map(|prover| prover.map(|prover| prover.into_evals()).unwrap_or_default())
+                    .collect_vec();
+
+                cloned(evals.iter().flatten())
+                    .for_each(|eval| challenger.observe_algebra_element(eval));
+
+                (
+                    z,
+                    BatchSumcheckProof {
+                        compressed_round_polys,
+                        evals,
+                    },
+                )
+            };
+
+            let z_first = challenger.sample_algebra_element();
+            z.insert(0, z_first);
+
+            izip!(&mut claims, &layer.evals).for_each(|(claim, evals)| {
+                if evals.is_empty() {
+                    return;
+                }
+                claim.evals = fix_var(DenseMatrix::new(evals, evals.len() / 2), z_first).values;
+                claim.z = z.clone();
+            });
+
+            layer
         })
-        .collect_vec();
+        .collect();
 
-    (
-        z,
-        FractionalSumProof {
-            sums: Vec::new(),
-            sumchecks: vec![BatchSumcheckProof {
-                compressed_round_polys: Vec::new(),
-                evals,
-            }],
-        },
-    )
+    (claims, FractionalSumProof { sums, layers })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[instrument(skip_all)]
 fn prove_air<Val, Challenge, A>(
     pk: &ProvingKey,
     inputs: &[VerifierInput<Val, A>],
-    mut traces: Vec<AirTrace<Val, Challenge>>,
+    mut traces: Vec<Trace<Val, Challenge>>,
     beta_powers: &[Challenge],
     gamma_powers: &[Challenge],
-    z_fs: &[Challenge],
-    claims_fs: &[Vec<Challenge>],
+    claims_fs: &[EvalClaim<Challenge>],
     mut challenger: impl FieldChallenger<Val>,
 ) -> (Vec<Vec<Challenge>>, AirProof<Challenge>)
 where
@@ -307,7 +319,7 @@ where
     let max_skip_rounds = itertools::max(cloned(&skip_rounds)).unwrap();
     let max_regular_rounds = itertools::max(cloned(&regular_rounds)).unwrap();
 
-    let r = (0..max_regular_rounds)
+    let z_zc = (0..max_regular_rounds)
         .map(|_| challenger.sample_algebra_element())
         .collect_vec();
 
@@ -322,14 +334,14 @@ where
     let mut univariate_skip_provers = izip!(pk.metas(), inputs, &mut traces, cloned(&skip_rounds))
         .map(|(meta, input, trace, skip_rounds)| {
             (skip_rounds > 0).then(|| {
-                UnivariateSkipProver::new(
+                AirUnivariateSkipProver::new(
                     meta,
                     input.air(),
                     input.public_values(),
+                    mem::take(trace),
                     beta_powers,
                     gamma_powers,
                     alpha_powers.rslice(meta.alpha_power_count()),
-                    mem::take(trace),
                     skip_rounds,
                 )
             })
@@ -337,17 +349,23 @@ where
         .collect_vec();
 
     let univariate_skips = izip!(
+        pk.metas(),
         univariate_skip_provers.iter_mut(),
         cloned(&skip_rounds),
         cloned(&regular_rounds),
+        claims_fs,
     )
-    .map(|(prover, skip_rounds, regular_rounds)| {
+    .map(|(meta, prover, skip_rounds, regular_rounds, claim_fs)| {
         prover
             .as_mut()
             .map(|prover| {
-                let (zero_check_round_poly, eval_check_round_poly) = prover
-                    .compute_round_poly(r.rslice(regular_rounds), z_fs.rslice(regular_rounds));
-                UnivariateSkipProof {
+                let (zero_check_round_poly, eval_check_round_poly) = prover.compute_round_poly(
+                    z_zc.rslice(regular_rounds),
+                    meta.has_interaction()
+                        .then(|| claim_fs.z.rslice(regular_rounds))
+                        .unwrap_or_default(),
+                );
+                AirUnivariateSkipProof {
                     skip_rounds,
                     zero_check_round_poly,
                     eval_check_round_poly,
@@ -367,42 +385,35 @@ where
 
     let x = challenger.sample_algebra_element();
 
-    let eq_r_helper = EqHelper::new(&r);
-    let eq_z_fs_helper = EqHelper::new(z_fs.rslice(max_regular_rounds));
+    let zero_check_eq_helper = EqHelper::new(&z_zc);
 
     let mut regular_provers = izip!(
         pk.metas(),
         inputs,
         &mut traces,
         &univariate_skip_provers,
-        claims_fs
+        claims_fs,
     )
-    .map(|(meta, input, trace, univariate_skip_prover, claims_fs)| {
+    .map(|(meta, input, trace, univariate_skip_prover, claim_fs)| {
         if let Some(univariate_skip_prover) = univariate_skip_prover {
-            univariate_skip_prover.to_regular_prover(
-                x,
-                &eq_r_helper,
-                &eq_z_fs_helper,
-                max_regular_rounds,
-            )
+            univariate_skip_prover.to_regular_prover(x, &zero_check_eq_helper, &claim_fs.z)
         } else {
             let eval_check_claim = dot_product::<Challenge, _, _>(
-                cloned(claims_fs),
+                cloned(&claim_fs.evals),
                 cloned(alpha_powers.rslice(2 * meta.interaction_count)),
             );
-            RegularSumcheckProver::new(
+            AirRegularProver::new(
                 meta,
                 input.air(),
                 input.public_values(),
-                Challenge::ZERO,
-                eval_check_claim,
                 mem::take(trace),
                 beta_powers,
                 gamma_powers,
                 alpha_powers.rslice(meta.alpha_power_count()),
-                &eq_r_helper,
-                &eq_z_fs_helper,
-                max_regular_rounds,
+                Challenge::ZERO,
+                eval_check_claim,
+                &zero_check_eq_helper,
+                &claim_fs.z,
             )
         }
     })
@@ -410,12 +421,12 @@ where
 
     let delta = challenger.sample_algebra_element::<Challenge>();
 
-    let (z, regular_sumcheck) = {
-        let (z, compressed_round_polys) = (0..max_regular_rounds)
-            .map(|round| {
+    let (z_regular, regular) = {
+        let (z, compressed_round_polys) = rev(0..max_regular_rounds)
+            .map(|log_b| {
                 let compressed_round_polys = regular_provers
                     .iter_mut()
-                    .map(|state| state.compute_round_poly(round))
+                    .map(|prover| prover.compute_round_poly(log_b))
                     .collect_vec();
 
                 let compressed_round_poly =
@@ -427,7 +438,7 @@ where
 
                 regular_provers
                     .iter_mut()
-                    .for_each(|state| state.fix_var(round, z_i));
+                    .for_each(|prover| prover.fix_var(log_b, z_i));
 
                 (z_i, compressed_round_poly)
             })
@@ -435,7 +446,7 @@ where
 
         let evals = regular_provers
             .into_iter()
-            .map(|state| state.into_evals())
+            .map(|prover| prover.into_evals())
             .collect_vec();
 
         cloned(evals.iter().flatten()).for_each(|eval| challenger.observe_algebra_element(eval));
@@ -461,31 +472,30 @@ where
     let mut eval_provers = izip!(
         pk.metas(),
         univariate_skip_provers,
-        &regular_sumcheck.evals,
+        &regular.evals,
         cloned(&regular_rounds)
     )
     .map(|(meta, prover, evals, regular_rounds)| {
         prover.map(|prover| {
             prover.into_univariate_eval_prover(
                 x,
-                z.rslice(regular_rounds),
+                z_regular.rslice(regular_rounds),
                 evals,
                 eta_powers.rslice(2 * meta.width),
-                max_skip_rounds,
             )
         })
     })
     .collect_vec();
 
-    let (z_prime, univariate_eval_sumcheck) = {
-        let (z_pirme, compressed_round_polys) = (0..max_skip_rounds)
-            .map(|round| {
+    let (z_skip, univariate_eval_check) = {
+        let (z, compressed_round_polys) = rev(0..max_skip_rounds)
+            .map(|log_b| {
                 let compressed_round_polys = eval_provers
                     .iter_mut()
                     .map(|prover| {
                         prover
                             .as_mut()
-                            .map(|prover| prover.compute_round_poly(round))
+                            .map(|prover| prover.compute_round_poly(log_b))
                             .unwrap_or_default()
                     })
                     .collect_vec();
@@ -495,14 +505,14 @@ where
 
                 cloned(&compressed_round_poly.0)
                     .for_each(|coeff| challenger.observe_algebra_element(coeff));
-                let z_prime_i = challenger.sample_algebra_element();
+                let z_i = challenger.sample_algebra_element();
 
                 eval_provers
                     .iter_mut()
                     .flatten()
-                    .for_each(|prover| prover.fix_var(round, z_prime_i));
+                    .for_each(|prover| prover.fix_var(log_b, z_i));
 
-                (z_prime_i, compressed_round_poly)
+                (z_i, compressed_round_poly)
             })
             .collect::<(Vec<_>, Vec<_>)>();
         let evals = eval_provers
@@ -513,7 +523,7 @@ where
         cloned(evals.iter().flatten()).for_each(|eval| challenger.observe_algebra_element(eval));
 
         (
-            z_pirme,
+            z,
             BatchSumcheckProof {
                 compressed_round_polys,
                 evals,
@@ -523,7 +533,7 @@ where
 
     let zs = izip!(skip_rounds, regular_rounds)
         .map(|(skip_rounds, regular_rounds)| {
-            chain![z_prime.rslice(skip_rounds), z.rslice(regular_rounds)]
+            chain![z_skip.rslice(skip_rounds), z_regular.rslice(regular_rounds)]
                 .copied()
                 .collect()
         })
@@ -533,8 +543,8 @@ where
         zs,
         AirProof {
             univariate_skips,
-            regular_sumcheck,
-            univariate_eval_sumcheck,
+            regular,
+            univariate_eval_check,
         },
     )
 }

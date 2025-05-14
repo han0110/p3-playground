@@ -43,6 +43,8 @@ impl<AB: InteractionAirBuilder> Air<AB> for SendingAir {
             );
         }
         builder.push_send(0, self.interaction_values(&local, &next), AB::Expr::ONE);
+        builder.push_send(1, [AB::Expr::ONE], AB::Expr::ONE);
+        builder.push_receive(1, [AB::Expr::ONE], AB::Expr::ONE);
     }
 }
 
@@ -152,14 +154,14 @@ impl SendingAir {
 #[test]
 fn interaction() {
     let mut rng = StdRng::from_os_rng();
-    for ((num_vars, constraint_degree), interaction_degree) in
+    for ((log_h, constraint_degree), interaction_degree) in
         (0..12).cartesian_product(0..4).cartesian_product(0..4)
     {
         let sending_air = SendingAir {
             constraint_degree,
             interaction_degree,
         };
-        let sending_trace = sending_air.generate_sending_trace(1 << num_vars, &mut rng);
+        let sending_trace = sending_air.generate_sending_trace(1 << log_h, &mut rng);
         let receiving_trace = sending_air.generate_receiving_trace(&sending_trace);
 
         run::<Val, Challenge, _>(vec![

@@ -55,6 +55,10 @@ impl VerifyingKey {
         itertools::max(self.metas.iter().map(|meta| meta.width)).unwrap_or_default()
     }
 
+    pub fn max_interaction_count(&self) -> usize {
+        itertools::max(self.metas.iter().map(|meta| meta.interaction_count)).unwrap_or_default()
+    }
+
     pub fn max_alpha_power_count(&self) -> usize {
         itertools::max(self.metas.iter().map(|meta| meta.alpha_power_count())).unwrap_or_default()
     }

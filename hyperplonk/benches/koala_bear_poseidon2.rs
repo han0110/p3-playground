@@ -59,35 +59,31 @@ fn bench(c: &mut Criterion) {
     let air = &Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
     let (_, pk) = keygen([&air]);
 
-    for num_vars in 19..22 {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(num_vars),
-            &num_vars,
-            |b, num_vars| {
-                let trace = generate_trace_rows::<
-                    _,
-                    LinearLayers,
-                    WIDTH,
-                    SBOX_DEGREE,
-                    SBOX_REGISTERS,
-                    HALF_FULL_ROUNDS,
-                    PARTIAL_ROUNDS,
-                >(
-                    (0..1 << num_vars).map(|_| rng.random()).collect(),
-                    &round_constants,
-                    0,
-                );
-                b.iter_batched(
-                    || trace.clone(),
-                    |trace| {
-                        let prover_inputs = vec![ProverInput::new(air, Vec::new(), trace.clone())];
-                        let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
-                        prove::<_, Challenge, _>(&pk, prover_inputs, challenger);
-                    },
-                    BatchSize::LargeInput,
-                );
-            },
-        );
+    for log_h in 19..22 {
+        group.bench_with_input(BenchmarkId::from_parameter(log_h), &log_h, |b, log_h| {
+            let trace = generate_trace_rows::<
+                _,
+                LinearLayers,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >(
+                (0..1 << log_h).map(|_| rng.random()).collect(),
+                &round_constants,
+                0,
+            );
+            b.iter_batched(
+                || trace.clone(),
+                |trace| {
+                    let prover_inputs = vec![ProverInput::new(air, Vec::new(), trace.clone())];
+                    let challenger = Challenger::from_hasher(Vec::new(), Keccak256Hash {});
+                    prove::<_, Challenge, _>(&pk, prover_inputs, challenger);
+                },
+                BatchSize::LargeInput,
+            );
+        });
     }
 }
 

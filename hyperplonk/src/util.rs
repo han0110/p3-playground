@@ -1,5 +1,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
+use core::array::from_fn;
+use core::iter::Sum;
+use core::ops::{Add, Mul};
 
 use itertools::{cloned, enumerate, rev, zip_eq};
 use p3_field::{
@@ -38,24 +41,24 @@ pub fn evaluate_ml_poly<F: Field, EF: ExtensionField<F>>(evals: &[F], z: &[EF]) 
 }
 
 pub(crate) fn eq_poly_packed<F: Field, EF: ExtensionField<F>>(
-    r: &[EF],
+    z: &[EF],
 ) -> Vec<EF::ExtensionPacking> {
     let log_packing_width = log2_strict_usize(F::Packing::WIDTH);
-    let (r_lo, r_hi) = r.split_at(r.len().saturating_sub(log_packing_width));
-    let mut eq_r_hi = eq_poly(r_hi, EF::ONE);
-    eq_r_hi.resize(F::Packing::WIDTH, EF::ZERO);
-    eq_poly(r_lo, EF::ExtensionPacking::from_ext_slice(&eq_r_hi))
+    let (z_lo, z_hi) = z.split_at(z.len().saturating_sub(log_packing_width));
+    let mut eq_z_hi = eq_poly(z_hi, EF::ONE);
+    eq_z_hi.resize(F::Packing::WIDTH, EF::ZERO);
+    eq_poly(z_lo, EF::ExtensionPacking::from_ext_slice(&eq_z_hi))
 }
 
-#[instrument(level = "debug", skip_all, fields(log_h = %r.len()))]
-pub fn eq_poly<EF, VarEF>(r: &[EF], scalar: VarEF) -> Vec<VarEF>
+#[instrument(level = "debug", skip_all, fields(log_h = %z.len()))]
+pub fn eq_poly<EF, VarEF>(z: &[EF], scalar: VarEF) -> Vec<VarEF>
 where
     EF: Field,
     VarEF: Copy + Send + Sync + Algebra<EF>,
 {
-    let mut evals = vec![VarEF::ZERO; 1 << r.len()];
+    let mut evals = vec![VarEF::ZERO; 1 << z.len()];
     evals[0] = scalar;
-    enumerate(r).for_each(|(i, r_i)| eq_expand(&mut evals, *r_i, i));
+    enumerate(z).for_each(|(i, z_i)| eq_expand(&mut evals, *z_i, i));
     evals
 }
 
@@ -183,12 +186,6 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
 impl<F: Copy + PrimeCharacteristicRing> FieldSlice<F> for [F] {}
 
 #[inline]
-pub(crate) fn vec_add<F: Copy + PrimeCharacteristicRing>(mut lhs: Vec<F>, rhs: Vec<F>) -> Vec<F> {
-    lhs.slice_add_assign(&rhs);
-    lhs
-}
-
-#[inline]
 pub(crate) fn vec_pair_add<F: Copy + PrimeCharacteristicRing>(
     mut lhs: (Vec<F>, Vec<F>),
     rhs: (Vec<F>, Vec<F>),
@@ -196,4 +193,40 @@ pub(crate) fn vec_pair_add<F: Copy + PrimeCharacteristicRing>(
     lhs.0.slice_add_assign(&rhs.0);
     lhs.1.slice_add_assign(&rhs.1);
     lhs
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct RingArray<F: Copy + PrimeCharacteristicRing, const N: usize>(pub [F; N]);
+
+impl<F: Copy + PrimeCharacteristicRing, const N: usize> Default for RingArray<F, N> {
+    #[inline]
+    fn default() -> Self {
+        Self([F::ZERO; N])
+    }
+}
+
+impl<F: Copy + PrimeCharacteristicRing, const N: usize> Add for RingArray<F, N> {
+    type Output = Self;
+
+    #[inline]
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(from_fn(|i| self.0[i] + rhs.0[i]))
+    }
+}
+
+impl<F: Copy + PrimeCharacteristicRing, const N: usize> Mul<F> for RingArray<F, N> {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: F) -> Self::Output {
+        Self(self.0.map(|lhs| lhs * rhs))
+    }
+}
+
+impl<F: Copy + PrimeCharacteristicRing, const N: usize> Sum for RingArray<F, N> {
+    #[inline]
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, item| acc + item).unwrap_or_default()
+    }
 }

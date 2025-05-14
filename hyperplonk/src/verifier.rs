@@ -1,3 +1,4 @@
+use alloc::vec;
 use alloc::vec::Vec;
 use core::iter::repeat_n;
 
@@ -6,17 +7,18 @@ use p3_air::Air;
 use p3_air_ext::VerifierInput;
 use p3_challenger::FieldChallenger;
 use p3_field::{ExtensionField, TwoAdicField};
-use p3_matrix::dense::RowMajorMatrixView;
+use p3_matrix::dense::DenseMatrix;
 
 use crate::{
-    AirProof, FractionalSumProof, PiopProof, Proof, RSlice, VerifierConstraintFolder, VerifyingKey,
-    eq_eval, evaluate_ml_poly, evaluations_on_domain, lagrange_evals, random_linear_combine,
-    selectors_at_point,
+    AirProof, EvalClaim, Fraction, FractionalSumProof, PiopProof, Proof, RSlice,
+    VerifierConstraintFolder, VerifyingKey, eq_eval, evaluate_ml_poly, evaluations_on_domain,
+    fix_var, lagrange_evals, random_linear_combine, selectors_at_point,
 };
 
 #[derive(Debug)]
 pub enum Error {
     InvalidProofShape,
+    NonZeroFractionalSum,
     UnivariateSkipEvaluationMismatch,
     OodEvaluationMismatch,
 }
@@ -32,7 +34,7 @@ where
     Challenge: ExtensionField<Val>,
     A: for<'t> Air<VerifierConstraintFolder<'t, Val, Challenge>>,
 {
-    assert!(!inputs.is_empty());
+    debug_assert!(!inputs.is_empty());
 
     // TODO: Observe commitment.
 
@@ -80,19 +82,7 @@ where
         .take(vk.max_bus_index() + 1)
         .collect_vec();
 
-    let z_fs = verify_fractional_sum(
-        vk,
-        inputs,
-        log_heights,
-        &proof.fractional_sum,
-        &mut challenger,
-    )?;
-    let claims_fs = proof
-        .fractional_sum
-        .sumchecks
-        .last()
-        .map(|sumcheck| sumcheck.evals.as_slice())
-        .unwrap();
+    let claims_fs = verify_fractional_sum(vk, log_heights, &proof.fractional_sum, &mut challenger)?;
 
     let zs = verify_air(
         vk,
@@ -100,8 +90,7 @@ where
         log_heights,
         &beta_powers,
         &gamma_powers,
-        &z_fs,
-        claims_fs,
+        &claims_fs,
         &proof.air,
         &mut challenger,
     )?;
@@ -109,36 +98,132 @@ where
     Ok(zs)
 }
 
-pub fn verify_fractional_sum<Val, Challenge, A>(
-    _vk: &VerifyingKey,
-    _inputs: &[VerifierInput<Val, A>],
+fn verify_fractional_sum<Val, Challenge>(
+    vk: &VerifyingKey,
     log_heights: &[usize],
-    _proof: &FractionalSumProof<Challenge>,
+    proof: &FractionalSumProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
-) -> Result<Vec<Challenge>, Error>
+) -> Result<Vec<EvalClaim<Challenge>>, Error>
 where
     Val: TwoAdicField,
     Challenge: ExtensionField<Val>,
-    A: for<'t> Air<VerifierConstraintFolder<'t, Val, Challenge>>,
 {
-    // TODO: Verify fractional sum check and get real z.
+    if !vk.has_any_interaction() {
+        return Ok(vec![Default::default(); vk.metas.len()]);
+    }
 
-    let z = (0..itertools::max(cloned(log_heights)).unwrap())
-        .map(|_| challenger.sample_algebra_element())
+    let max_log_height = itertools::max(cloned(log_heights)).unwrap();
+
+    if proof.sums.len() != vk.metas().len()
+        || !izip!(vk.metas(), &proof.sums).all(|(meta, sums)| sums.len() == meta.interaction_count)
+        || proof.layers.len() != max_log_height
+        || !proof.layers.iter().enumerate().all(|(rounds, layer)| {
+            layer.compressed_round_polys.len() == rounds
+                && layer
+                    .compressed_round_polys
+                    .iter()
+                    .all(|compressed_round_poly| compressed_round_poly.0.len() <= 3)
+                && layer.evals.len() == vk.metas().len()
+                && izip!(vk.metas(), cloned(log_heights), &layer.evals).all(
+                    |(meta, log_height, evals)| {
+                        rounds >= log_height || evals.len() == 4 * meta.interaction_count
+                    },
+                )
+        })
+    {
+        return Err(Error::InvalidProofShape);
+    }
+
+    if Fraction::sum(proof.sums.iter().flatten()) != Challenge::ZERO {
+        return Err(Error::NonZeroFractionalSum);
+    }
+
+    proof.sums.iter().flatten().for_each(|sum| {
+        challenger.observe_algebra_element(sum.numer);
+        challenger.observe_algebra_element(sum.denom);
+    });
+
+    let mut claims = proof
+        .sums
+        .iter()
+        .map(|sums| EvalClaim {
+            z: Vec::new(),
+            evals: sums.iter().flat_map(|sum| [sum.numer, sum.denom]).collect(),
+        })
         .collect_vec();
+    proof
+        .layers
+        .iter()
+        .enumerate()
+        .try_for_each(|(rounds, layer)| {
+            let alpha: Challenge = challenger.sample_algebra_element();
+            let beta: Challenge = challenger.sample_algebra_element();
 
-    Ok(z)
+            let mut claim = izip!(cloned(log_heights), &claims, beta.powers())
+                .filter(|(log_height, _, _)| rounds < *log_height)
+                .map(|(_, claim, beta_power)| {
+                    random_linear_combine(&claim.evals, alpha) * beta_power
+                })
+                .sum::<Challenge>();
+            let mut z = layer
+                .compressed_round_polys
+                .iter()
+                .map(|compressed_round_poly| {
+                    cloned(&compressed_round_poly.0)
+                        .for_each(|coeff| challenger.observe_algebra_element(coeff));
+                    let z_i = challenger.sample_algebra_element();
+                    claim = compressed_round_poly.subclaim(claim, z_i);
+                    z_i
+                })
+                .collect_vec();
+            let eval = izip!(vk.metas(), &claims, &layer.evals, beta.powers())
+                .map(|(meta, claim, evals, beta_power)| {
+                    if evals.is_empty() {
+                        return Challenge::ZERO;
+                    }
+                    let (lhs, rhs) = evals.split_at(2 * meta.interaction_count);
+                    izip!(lhs.iter().tuples(), rhs.iter().tuples())
+                        .map(|((n_l, d_l), (n_r, d_r))| {
+                            alpha * (*d_r * *n_l + *d_l * *n_r) + (*d_l * *d_r)
+                        })
+                        .reduce(|acc, item| acc * alpha.square() + item)
+                        .unwrap_or_default()
+                        * eq_eval(&claim.z, &z)
+                        * beta_power
+                })
+                .sum::<Challenge>();
+            if eval != claim {
+                return Err(Error::OodEvaluationMismatch);
+            }
+
+            cloned(layer.evals.iter().flatten())
+                .for_each(|eval| challenger.observe_algebra_element(eval));
+
+            let z_first = challenger.sample_algebra_element();
+            z.insert(0, z_first);
+
+            izip!(&mut claims, &layer.evals).for_each(|(claim, evals)| {
+                if evals.is_empty() {
+                    return;
+                }
+                claim.evals = fix_var(DenseMatrix::new(evals, evals.len() / 2), z_first).values;
+                claim.z = z.clone();
+            });
+
+            Ok(())
+        })?;
+
+    Ok(claims)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verify_air<Val, Challenge, A>(
+fn verify_air<Val, Challenge, A>(
     vk: &VerifyingKey,
     inputs: &[VerifierInput<Val, A>],
     log_heights: &[usize],
     beta_powers: &[Challenge],
     gamma_powers: &[Challenge],
-    z_fs: &[Challenge],
-    claims_fs: &[Vec<Challenge>],
+    claims_fs: &[EvalClaim<Challenge>],
     proof: &AirProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
 ) -> Result<Vec<Vec<Challenge>>, Error>
@@ -171,35 +256,35 @@ where
                 && univariate_skip.eval_check_round_poly.0.len()
                     <= meta.eval_check_uv_degree << univariate_skip.skip_rounds
         })
-        || proof.regular_sumcheck.compressed_round_polys.len() != max_regular_rounds
+        || proof.regular.compressed_round_polys.len() != max_regular_rounds
         || !proof
-            .regular_sumcheck
+            .regular
             .compressed_round_polys
             .iter()
             .all(|compressed_round_poly| {
                 compressed_round_poly.0.len() <= vk.max_regular_sumcheck_degree() + 1
             })
-        || proof.regular_sumcheck.evals.len() != vk.metas().len()
-        || !izip!(vk.metas(), &proof.regular_sumcheck.evals)
+        || proof.regular.evals.len() != vk.metas().len()
+        || !izip!(vk.metas(), &proof.regular.evals)
             .all(|(meta, evals)| evals.len() == 2 * meta.width)
-        || proof.univariate_eval_sumcheck.compressed_round_polys.len() != max_skip_rounds
+        || proof.univariate_eval_check.compressed_round_polys.len() != max_skip_rounds
         || !proof
-            .univariate_eval_sumcheck
+            .univariate_eval_check
             .compressed_round_polys
             .iter()
             .all(|compressed_round_poly| compressed_round_poly.0.len() <= 2)
-        || proof.univariate_eval_sumcheck.evals.len() != vk.metas().len()
+        || proof.univariate_eval_check.evals.len() != vk.metas().len()
         || !izip!(
             vk.metas(),
             cloned(&skip_rounds),
-            &proof.univariate_eval_sumcheck.evals
+            &proof.univariate_eval_check.evals
         )
         .all(|(meta, skip_rounds, evals)| skip_rounds == 0 || evals.len() == 2 * meta.width)
     {
         return Err(Error::InvalidProofShape);
     }
 
-    let r = (0..max_regular_rounds)
+    let z_zc = (0..max_regular_rounds)
         .map(|_| challenger.sample_algebra_element::<Challenge>())
         .collect_vec();
 
@@ -217,37 +302,34 @@ where
 
     let delta: Challenge = challenger.sample_algebra_element();
 
-    let z = {
+    let z_regular = {
         let claims = izip!(
             vk.metas(),
             claims_fs,
-            cloned(log_heights),
             &proof.univariate_skips,
             delta.powers()
         )
-        .map(
-            |(meta, claims_fs, log_height, univariate_skip, delta_power)| {
-                let eval_check_claim = random_linear_combine(claims_fs, alpha);
-                let claim = if univariate_skip.skip_rounds == 0 {
-                    eval_check_claim
-                } else {
-                    if meta.interaction_count > 0 {
-                        let evaluations = evaluations_on_domain(
-                            univariate_skip.skip_rounds,
-                            &univariate_skip.eval_check_round_poly,
-                        );
-                        let z_fs_skipped = &z_fs.rslice(log_height)[..univariate_skip.skip_rounds];
-                        if evaluate_ml_poly(&evaluations, z_fs_skipped) != eval_check_claim {
-                            return Err(Error::UnivariateSkipEvaluationMismatch);
-                        }
+        .map(|(meta, claim_fs, univariate_skip, delta_power)| {
+            let eval_check_claim = random_linear_combine(&claim_fs.evals, alpha);
+            let claim = if univariate_skip.skip_rounds == 0 {
+                eval_check_claim
+            } else {
+                if meta.interaction_count > 0 {
+                    let evaluations = evaluations_on_domain(
+                        univariate_skip.skip_rounds,
+                        &univariate_skip.eval_check_round_poly,
+                    );
+                    let z_fs_skipped = &claim_fs.z[..univariate_skip.skip_rounds];
+                    if evaluate_ml_poly(&evaluations, z_fs_skipped) != eval_check_claim {
+                        return Err(Error::UnivariateSkipEvaluationMismatch);
                     }
-                    univariate_skip.zero_check_round_poly.subclaim(x)
-                        * (x.exp_power_of_2(univariate_skip.skip_rounds) - Val::ONE)
-                        + univariate_skip.eval_check_round_poly.subclaim(x)
-                };
-                Ok(claim * delta_power)
-            },
-        )
+                }
+                univariate_skip.zero_check_round_poly.subclaim(x)
+                    * (x.exp_power_of_2(univariate_skip.skip_rounds) - Val::ONE)
+                    + univariate_skip.eval_check_round_poly.subclaim(x)
+            };
+            Ok(claim * delta_power)
+        })
         .try_collect::<_, Vec<_>, _>()?;
 
         let claims_at_round = |round| {
@@ -258,7 +340,7 @@ where
         };
 
         let mut claim = claims_at_round(0);
-        let z = enumerate(&proof.regular_sumcheck.compressed_round_polys)
+        let z = enumerate(&proof.regular.compressed_round_polys)
             .map(|(round, compressed_round_poly)| {
                 cloned(&compressed_round_poly.0)
                     .for_each(|coeff| challenger.observe_algebra_element(coeff));
@@ -273,14 +355,17 @@ where
             inputs,
             cloned(&skip_rounds),
             cloned(&regular_rounds),
-            &proof.regular_sumcheck.evals,
+            claims_fs,
+            &proof.regular.evals,
             delta.powers(),
         )
         .map(
-            |(meta, input, skip_rounds, regular_rounds, evals, delta_power)| {
+            |(meta, input, skip_rounds, regular_rounds, claim_fs, evals, delta_power)| {
                 let sels = selectors_at_point(skip_rounds, x);
-                let z_fs = z_fs.rslice(regular_rounds);
-                let r = r.rslice(regular_rounds);
+                let z_fs = meta
+                    .has_interaction()
+                    .then(|| claim_fs.z.rslice(regular_rounds));
+                let z_zc = z_zc.rslice(regular_rounds);
                 let z = z.rslice(regular_rounds);
                 let eq_0_z = eq_eval(repeat_n(&Challenge::ZERO, z.len()), z);
                 let eq_1_z = eq_eval(repeat_n(&Challenge::ONE, z.len()), z);
@@ -288,7 +373,7 @@ where
                 let is_last_row = sels.is_last_row * eq_1_z;
                 let is_transition = Challenge::ONE - eq_1_z + sels.is_transition * eq_1_z;
                 let mut builder = VerifierConstraintFolder {
-                    main: RowMajorMatrixView::new(evals, meta.width),
+                    main: DenseMatrix::new(evals, meta.width),
                     public_values: input.public_values(),
                     is_first_row,
                     is_last_row,
@@ -302,8 +387,10 @@ where
                 input.air().eval(&mut builder);
                 let zero_check_eval = builder.zero_check_accumulator
                     * alpha.exp_u64(2 * meta.interaction_count as u64)
-                    * eq_eval(r, z);
-                let eval_check_eval = builder.eval_check_accumulator * eq_eval(z_fs, z);
+                    * eq_eval(z_zc, z);
+                let eval_check_eval = z_fs
+                    .map(|z_fs| builder.eval_check_accumulator * eq_eval(z_fs, z))
+                    .unwrap_or_default();
                 (zero_check_eval + eval_check_eval) * delta_power
             },
         )
@@ -315,24 +402,20 @@ where
         z
     };
 
-    cloned(proof.regular_sumcheck.evals.iter().flatten())
+    cloned(proof.regular.evals.iter().flatten())
         .for_each(|eval| challenger.observe_algebra_element(eval));
 
     let eta: Challenge = challenger.sample_algebra_element();
     let theta: Challenge = challenger.sample_algebra_element();
 
-    let z_prime = {
-        let claims = izip!(
-            cloned(&skip_rounds),
-            &proof.regular_sumcheck.evals,
-            theta.powers()
-        )
-        .map(|(skip_rounds, evals, theta_power)| {
-            (skip_rounds != 0)
-                .then(|| random_linear_combine(evals, eta) * theta_power)
-                .unwrap_or_default()
-        })
-        .collect_vec();
+    let z_skip = {
+        let claims = izip!(cloned(&skip_rounds), &proof.regular.evals, theta.powers())
+            .map(|(skip_rounds, evals, theta_power)| {
+                (skip_rounds != 0)
+                    .then(|| random_linear_combine(evals, eta) * theta_power)
+                    .unwrap_or_default()
+            })
+            .collect_vec();
 
         let claim_at_round = |round| {
             izip!(cloned(&skip_rounds), cloned(&claims))
@@ -343,25 +426,24 @@ where
         };
 
         let mut claim = claim_at_round(0);
-        let z_prime = enumerate(&proof.univariate_eval_sumcheck.compressed_round_polys)
+        let z = enumerate(&proof.univariate_eval_check.compressed_round_polys)
             .map(|(round, compressed_round_poly)| {
                 cloned(&compressed_round_poly.0)
                     .for_each(|coeff| challenger.observe_algebra_element(coeff));
-                let z_prime_i = challenger.sample_algebra_element();
-                claim =
-                    compressed_round_poly.subclaim(claim, z_prime_i) + claim_at_round(round + 1);
-                z_prime_i
+                let z_i = challenger.sample_algebra_element();
+                claim = compressed_round_poly.subclaim(claim, z_i) + claim_at_round(round + 1);
+                z_i
             })
             .collect_vec();
 
         let eval = izip!(
             cloned(&skip_rounds),
-            &proof.univariate_eval_sumcheck.evals,
+            &proof.univariate_eval_check.evals,
             theta.powers()
         )
         .map(|(skip_rounds, evals, theta_power)| {
             random_linear_combine(evals, eta)
-                * evaluate_ml_poly(&lagrange_evals(skip_rounds, x), z_prime.rslice(skip_rounds))
+                * evaluate_ml_poly(&lagrange_evals(skip_rounds, x), z.rslice(skip_rounds))
                 * theta_power
         })
         .sum::<Challenge>();
@@ -369,15 +451,15 @@ where
             return Err(Error::OodEvaluationMismatch);
         }
 
-        z_prime
+        z
     };
 
-    cloned(proof.univariate_eval_sumcheck.evals.iter().flatten())
+    cloned(proof.univariate_eval_check.evals.iter().flatten())
         .for_each(|eval| challenger.observe_algebra_element(eval));
 
     let zs = izip!(skip_rounds, regular_rounds)
         .map(|(skip_rounds, regular_rounds)| {
-            chain![z_prime.rslice(skip_rounds), z.rslice(regular_rounds)]
+            chain![z_skip.rslice(skip_rounds), z_regular.rslice(regular_rounds)]
                 .copied()
                 .collect()
         })

@@ -14,7 +14,7 @@ mod verifier;
 
 pub use config::*;
 pub use folder::*;
-pub(crate) use interaction::*;
+pub use interaction::*;
 pub use keygen::*;
 pub use p3_air_ext::*;
 pub use proof::*;

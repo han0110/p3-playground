@@ -3,7 +3,7 @@ use core::mem::swap;
 use core::ops::{Add, Mul};
 
 use itertools::chain;
-use p3_field::Field;
+use p3_field::{Field, batch_multiplicative_inverse, dot_product};
 use serde::{Deserialize, Serialize};
 
 use crate::{FieldSlice, evaluate_uv_poly};
@@ -22,27 +22,40 @@ pub struct PiopProof<Challenge> {
     pub air: AirProof<Challenge>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Fraction<Challenge> {
-    pub numerator: Challenge,
-    pub denominator: Challenge,
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FractionalSumProof<Challenge> {
+    pub sums: Vec<Vec<Fraction<Challenge>>>,
+    pub layers: Vec<BatchSumcheckProof<Challenge>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FractionalSumProof<Challenge> {
-    pub sums: Vec<Fraction<Challenge>>,
-    pub sumchecks: Vec<BatchSumcheckProof<Challenge>>,
+pub struct Fraction<Challenge> {
+    pub numer: Challenge,
+    pub denom: Challenge,
+}
+
+impl<Challenge: Field> Fraction<Challenge> {
+    pub fn sum<'a>(fracs: impl IntoIterator<Item = &'a Self>) -> Challenge {
+        let (numers, denoms) = fracs
+            .into_iter()
+            .map(|frac| (frac.numer, frac.denom))
+            .collect::<(Vec<_>, Vec<_>)>();
+        dot_product(
+            numers.into_iter(),
+            batch_multiplicative_inverse(&denoms).into_iter(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AirProof<Challenge> {
-    pub univariate_skips: Vec<UnivariateSkipProof<Challenge>>,
-    pub regular_sumcheck: BatchSumcheckProof<Challenge>,
-    pub univariate_eval_sumcheck: BatchSumcheckProof<Challenge>,
+    pub univariate_skips: Vec<AirUnivariateSkipProof<Challenge>>,
+    pub regular: BatchSumcheckProof<Challenge>,
+    pub univariate_eval_check: BatchSumcheckProof<Challenge>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct UnivariateSkipProof<Challenge> {
+pub struct AirUnivariateSkipProof<Challenge> {
     pub skip_rounds: usize,
     pub zero_check_round_poly: RoundPoly<Challenge>,
     pub eval_check_round_poly: RoundPoly<Challenge>,

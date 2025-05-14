@@ -17,16 +17,15 @@ use tracing::info_span;
 
 use crate::{
     CompressedRoundPoly, FieldSlice, PackedExtensionValue, RoundPoly, eq_poly_packed, fix_var,
-    vec_add,
 };
 
+mod air;
 mod eval;
-mod regular;
-mod univariate_skip;
+mod fractional_sum;
 
+pub(crate) use air::*;
 pub(crate) use eval::*;
-pub(crate) use regular::*;
-pub(crate) use univariate_skip::*;
+pub(crate) use fractional_sum::*;
 
 impl<Challenge: Field> RoundPoly<Challenge> {
     fn from_evals<Val: Field>(evals: impl IntoIterator<Item = Challenge>) -> Self
@@ -42,8 +41,8 @@ impl<Challenge: Field> RoundPoly<Challenge> {
         )
     }
 
-    fn mul_by_scaled_eq(&self, scalar: Challenge, r_i: Challenge) -> Self {
-        let eq = [Challenge::ONE - r_i, r_i.double() - Challenge::ONE];
+    fn mul_by_scaled_eq(&self, scalar: Challenge, z_i: Challenge) -> Self {
+        let eq = [Challenge::ONE - z_i, z_i.double() - Challenge::ONE];
         let scaled_eq = eq.map(|coeff| coeff * scalar);
         let mut out = vec![Challenge::ZERO; self.0.len() + 1];
         self.0.iter().enumerate().for_each(|(idx, coeff)| {
@@ -51,6 +50,22 @@ impl<Challenge: Field> RoundPoly<Challenge> {
             out[idx + 1] += *coeff * scaled_eq[1];
         });
         Self(out)
+    }
+
+    fn from_compressed(
+        claim: Challenge,
+        mut compressed_round_poly: CompressedRoundPoly<Challenge>,
+    ) -> Self {
+        if compressed_round_poly.0.is_empty() {
+            return Self::default();
+        }
+        let coeff_1 = {
+            let (coeff_0, coeff_rest) = compressed_round_poly.0.split_first().unwrap();
+            let eval_1 = claim - *coeff_0;
+            eval_1 - *coeff_0 - coeff_rest.iter().copied().sum::<Challenge>()
+        };
+        compressed_round_poly.0.insert(1, coeff_1);
+        Self(compressed_round_poly.0)
     }
 
     fn into_compressed(mut self) -> CompressedRoundPoly<Challenge> {
@@ -63,7 +78,7 @@ impl<Challenge: Field> RoundPoly<Challenge> {
 
 fn vander_mat_inv<F: Field>(points: impl IntoIterator<Item = F>) -> RowMajorMatrix<F> {
     let points = points.into_iter().map_into().collect_vec();
-    assert!(!points.is_empty());
+    debug_assert!(!points.is_empty());
 
     let poly_from_roots = |poly: &mut [F], roots: &[F], scalar: F| {
         *poly.last_mut().unwrap() = scalar;
@@ -88,22 +103,34 @@ fn vander_mat_inv<F: Field>(points: impl IntoIterator<Item = F>) -> RowMajorMatr
     mat.transpose()
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct EvalClaim<Challenge> {
+    pub(crate) z: Vec<Challenge>,
+    pub(crate) evals: Vec<Challenge>,
+}
+
 pub(crate) struct EqHelper<'a, Val: Field, Challenge: ExtensionField<Val>> {
     pub(crate) evals: Vec<Challenge::ExtensionPacking>,
-    r: &'a [Challenge],
-    one_minus_r_inv: Vec<Challenge>,
+    z: &'a [Challenge],
+    z_inv: Vec<Challenge>,
+    one_minus_z_inv: Vec<Challenge>,
     correcting_factors: Vec<Challenge>,
     _marker: PhantomData<Val>,
 }
 
 impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge> {
-    pub(crate) fn new(r: &'a [Challenge]) -> Self {
-        let evals = eq_poly_packed(&r[min(r.len(), 1)..]);
-        let one_minus_r_inv =
-            batch_multiplicative_inverse(&r.iter().map(|r_i| Challenge::ONE - *r_i).collect_vec());
+    pub(crate) fn new(z: &'a [Challenge]) -> Self {
+        let evals = eq_poly_packed(&z[min(z.len(), 1)..]);
+        let (z_inv, one_minus_z_inv) = {
+            let one_minus_r = z.iter().map(|z_i| Challenge::ONE - *z_i);
+            let mut inv =
+                batch_multiplicative_inverse(&chain![cloned(z), one_minus_r].collect_vec());
+            let one_minus_z_inv = inv.drain(z.len()..).collect_vec();
+            (inv, one_minus_z_inv)
+        };
         let correcting_factors = chain![
             [Challenge::ONE],
-            one_minus_r_inv[min(r.len(), 1)..]
+            one_minus_z_inv[min(z.len(), 1)..]
                 .iter()
                 .scan(Challenge::ONE, |product, value| {
                     *product *= *value;
@@ -113,51 +140,62 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge
         .collect();
         Self {
             evals,
-            r,
-            one_minus_r_inv,
+            z,
+            z_inv,
+            one_minus_z_inv,
             correcting_factors,
             _marker: PhantomData,
         }
     }
 
-    fn r_i(&self, round: usize) -> Challenge {
-        self.r[round]
+    fn nth(&self, log_b: usize) -> usize {
+        debug_assert!(log_b < self.z.len());
+        self.z.len() - 1 - log_b
     }
 
-    fn eval_packed(&self, round: usize, idx: usize) -> Challenge::ExtensionPacking {
-        self.evals[idx << round]
+    fn z_i(&self, log_b: usize) -> Challenge {
+        self.z[self.nth(log_b)]
     }
 
-    fn eval(&self, round: usize, idx: usize) -> Challenge {
-        let len = min(Val::Packing::WIDTH, 1 << self.r.len().saturating_sub(1));
-        let step = len >> (self.r.len().saturating_sub(1 + round));
+    fn eval_packed(&self, log_b: usize, b: usize) -> Challenge::ExtensionPacking {
+        self.evals[b << self.nth(log_b)]
+    }
+
+    fn eval(&self, log_b: usize, b: usize) -> Challenge {
+        let len = min(Val::Packing::WIDTH, 1 << self.z.len().saturating_sub(1));
+        let step = len >> (self.z.len().saturating_sub(1 + self.nth(log_b)));
         Challenge::from_basis_coefficients_fn(|j| {
-            self.evals[0].as_basis_coefficients_slice()[j].as_slice()[step * idx]
+            self.evals[0].as_basis_coefficients_slice()[j].as_slice()[step * b]
         })
     }
 
-    fn eval_0(&self, round: usize, claim: Challenge, eval_1: Challenge) -> Challenge {
-        (claim - self.r[round] * eval_1) * self.one_minus_r_inv[round]
+    fn recover_eval_0(&self, log_b: usize, claim: Challenge, eval_1: Challenge) -> Challenge {
+        (claim - self.z[self.nth(log_b)] * eval_1) * self.one_minus_z_inv[self.nth(log_b)]
     }
 
-    fn correcting_factor(&self, round: usize) -> Challenge {
-        self.correcting_factors[round]
+    fn recover_eval_1(&self, log_b: usize, claim: Challenge, eval_0: Challenge) -> Challenge {
+        (claim - (Challenge::ONE - self.z[self.nth(log_b)]) * eval_0) * self.z_inv[self.nth(log_b)]
+    }
+
+    fn correcting_factor(&self, log_b: usize) -> Challenge {
+        self.correcting_factors[self.nth(log_b)]
     }
 }
 
-pub(crate) enum AirTrace<Val: Field, Challenge: ExtensionField<Val>> {
+#[derive(Debug, Clone)]
+pub(crate) enum Trace<Val: Field, Challenge: ExtensionField<Val>> {
     Packing(RowMajorMatrix<Val::Packing>),
     ExtensionPacking(RowMajorMatrix<Challenge::ExtensionPacking>),
     Extension(RowMajorMatrix<Challenge>),
 }
 
-impl<Val: Field, Challenge: ExtensionField<Val>> Default for AirTrace<Val, Challenge> {
+impl<Val: Field, Challenge: ExtensionField<Val>> Default for Trace<Val, Challenge> {
     fn default() -> Self {
         Self::Extension(RowMajorMatrix::new(Vec::new(), 0))
     }
 }
 
-impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
+impl<Val: Field, Challenge: ExtensionField<Val>> Trace<Val, Challenge> {
     pub(crate) fn new(trace: impl Matrix<Val>) -> Self {
         const WINDOW: usize = 2;
         let width = trace.width();
@@ -212,10 +250,17 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
 
     pub(crate) fn extension_packing(trace: RowMajorMatrix<Challenge::ExtensionPacking>) -> Self {
         if trace.height() == 1 {
-            AirTrace::Extension(unpack_row(&trace.values))
+            Self::Extension(unpack_row(&trace.values))
         } else {
-            AirTrace::ExtensionPacking(trace)
+            Self::ExtensionPacking(trace)
         }
+    }
+
+    pub(crate) fn into_evals(self) -> Vec<Challenge> {
+        let Self::Extension(trace) = self else {
+            unreachable!()
+        };
+        trace.values
     }
 
     pub(crate) fn log_height(&self) -> usize {
@@ -227,48 +272,6 @@ impl<Val: Field, Challenge: ExtensionField<Val>> AirTrace<Val, Challenge> {
                 log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
             }
             Self::Extension(trace) => log2_strict_usize(trace.height()),
-        }
-    }
-
-    pub(crate) fn columnwise_dot_product(&self, scalars: &[Challenge]) -> Vec<Challenge> {
-        assert_eq!(1 << self.log_height(), scalars.len());
-
-        macro_rules! columnwise_dot_product_packed {
-            ($trace:ident) => {{
-                let scalars_packed = {
-                    let packed_len = scalars.len() / Val::Packing::WIDTH;
-                    (0..packed_len)
-                        .into_par_iter()
-                        .map(|i| {
-                            Challenge::ExtensionPacking::from_basis_coefficients_fn(|j| {
-                                Val::Packing::from_fn(|k| {
-                                    scalars[i + k * packed_len].as_basis_coefficients_slice()[j]
-                                })
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                };
-                $trace
-                    .par_rows()
-                    .zip(scalars_packed)
-                    .par_fold_reduce(
-                        || Challenge::ExtensionPacking::zero_vec($trace.width()),
-                        |mut acc, (row, scalar)| {
-                            acc.slice_add_assign_scaled_iter(row, scalar);
-                            acc
-                        },
-                        vec_add,
-                    )
-                    .into_iter()
-                    .map(|eval| eval.ext_sum())
-                    .collect()
-            }};
-        }
-
-        match self {
-            Self::Packing(trace) => columnwise_dot_product_packed!(trace),
-            Self::ExtensionPacking(trace) => columnwise_dot_product_packed!(trace),
-            Self::Extension(trace) => trace.columnwise_dot_product(scalars),
         }
     }
 

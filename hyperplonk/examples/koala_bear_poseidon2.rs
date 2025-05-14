@@ -60,7 +60,7 @@ fn main() {
     let air = &Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
     let (vk, pk) = keygen([&air]);
 
-    let num_vars = 20;
+    let log_h = 20;
     let trace = generate_trace_rows::<
         _,
         LinearLayers,
@@ -70,7 +70,7 @@ fn main() {
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >(
-        (0..1 << num_vars).map(|_| rng.random()).collect(),
+        (0..1 << log_h).map(|_| rng.random()).collect(),
         &round_constants,
         0,
     );

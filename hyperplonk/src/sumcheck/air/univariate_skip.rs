@@ -18,27 +18,26 @@ use p3_util::log2_ceil_usize;
 use tracing::{info_span, instrument};
 
 use crate::{
-    AirMeta, AirTrace, EqHelper, EvalSumcheckProver, FieldSlice, IsFirstRow, IsLastRow,
-    IsTransition, PackedExtensionValue, ProverConstraintFolderGeneric,
-    ProverConstraintFolderOnExtension, ProverConstraintFolderOnExtensionPacking,
-    ProverConstraintFolderOnPacking, RegularSumcheckProver, RoundPoly, eq_poly_packed,
-    vec_pair_add,
+    AirMeta, AirRegularProver, EqHelper, EvalSumcheckProver, FieldSlice, PackedExtensionValue,
+    ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
+    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking, RoundPoly, Trace,
+    eq_poly_packed, vec_pair_add,
 };
 
-pub(crate) struct UnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
-    pub(crate) meta: &'a AirMeta,
+pub(crate) struct AirUnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {
+    meta: &'a AirMeta,
     air: &'a A,
     public_values: &'a [Val],
+    trace: Trace<Val, Challenge>,
     beta_powers: &'a [Challenge],
     gamma_powers: &'a [Challenge],
-    pub(crate) alpha_powers: &'a [Challenge],
-    trace: AirTrace<Val, Challenge>,
+    alpha_powers: &'a [Challenge],
     skip_rounds: usize,
     zero_check_round_poly: RoundPoly<Challenge>,
     eval_check_round_poly: RoundPoly<Challenge>,
 }
 
-impl<'a, Val, Challenge, A> UnivariateSkipProver<'a, Val, Challenge, A>
+impl<'a, Val, Challenge, A> AirUnivariateSkipProver<'a, Val, Challenge, A>
 where
     Val: TwoAdicField + Ord,
     Challenge: ExtensionField<Val>,
@@ -49,20 +48,20 @@ where
         meta: &'a AirMeta,
         air: &'a A,
         public_values: &'a [Val],
+        trace: Trace<Val, Challenge>,
         beta_powers: &'a [Challenge],
         gamma_powers: &'a [Challenge],
         alpha_powers: &'a [Challenge],
-        trace: AirTrace<Val, Challenge>,
         skip_rounds: usize,
     ) -> Self {
         Self {
             meta,
             air,
             public_values,
+            trace,
             beta_powers,
             gamma_powers,
             alpha_powers,
-            trace,
             skip_rounds,
             zero_check_round_poly: Default::default(),
             eval_check_round_poly: Default::default(),
@@ -72,46 +71,44 @@ where
     #[instrument(skip_all, name = "compute univariate skip round poly", fields(log_h = %self.trace.log_height()))]
     pub(crate) fn compute_round_poly(
         &mut self,
-        r: &[Challenge],
+        z_zc: &[Challenge],
         z_fs: &[Challenge],
     ) -> (RoundPoly<Challenge>, RoundPoly<Challenge>) {
-        let AirTrace::Packing(trace) = &self.trace else {
+        let Trace::Packing(trace) = &self.trace else {
             unimplemented!()
         };
 
         let (zero_check_poly, eval_check_poly) = {
-            let has_interaction = self.meta.has_interaction() as usize;
+            let has_interaction = self.meta.has_interaction();
             let zero_check_quotient_degree = self.meta.zero_check_uv_degree.saturating_sub(1);
             let eval_check_degree = self.meta.eval_check_uv_degree;
             let added_bits = log2_ceil_usize(max(zero_check_quotient_degree, eval_check_degree));
             let sels = domain(self.skip_rounds)
                 .selectors_on_coset(quotient_domain(self.skip_rounds, added_bits));
-            let eq_r_packed = eq_poly_packed(r);
-            let eq_z_fs_packed = eq_poly_packed(z_fs);
+            let zero_check_eq_packed = eq_poly_packed(z_zc);
+            let eval_check_eq_packed = eq_poly_packed(z_fs);
             let (zero_check_values, eval_check_values) = trace
                 .par_row_chunks(1 << self.skip_rounds)
-                .zip(&eq_r_packed)
-                .zip(&eq_z_fs_packed)
                 .enumerate()
                 .par_fold_reduce(
                     || {
+                        let len = 1 << (self.skip_rounds + added_bits);
                         (
-                            vec![<_>::ZERO; 1 << (self.skip_rounds + added_bits)],
-                            vec![<_>::ZERO; has_interaction << (self.skip_rounds + added_bits)],
+                            vec![<_>::ZERO; len],
+                            vec![<_>::ZERO; has_interaction.then_some(len).unwrap_or_default()],
                         )
                     },
-                    |(mut zero_check_values, mut eval_check_values),
-                     (chunk, ((trace, eq_r_eval), eq_z_fs_eval))| {
+                    |(mut zero_check_values, mut eval_check_values), (chunk, trace)| {
                         self.compute_chunk_values(
                             &mut zero_check_values,
                             &mut eval_check_values,
                             trace,
-                            *eq_r_eval,
-                            *eq_z_fs_eval,
+                            zero_check_eq_packed[chunk],
+                            has_interaction.then(|| eval_check_eq_packed[chunk]),
                             &sels,
                             added_bits,
                             chunk == 0,
-                            chunk == eq_r_packed.len() - 1,
+                            chunk == zero_check_eq_packed.len() - 1,
                         );
                         (zero_check_values, eval_check_values)
                     },
@@ -149,10 +146,9 @@ where
     pub(crate) fn to_regular_prover(
         &self,
         x: Challenge,
-        eq_r_helper: &'a EqHelper<'a, Val, Challenge>,
-        eq_z_fs_helper: &'a EqHelper<'a, Val, Challenge>,
-        max_regular_rounds: usize,
-    ) -> RegularSumcheckProver<'a, Val, Challenge, A>
+        zero_check_eq_helper: &'a EqHelper<'a, Val, Challenge>,
+        z_fs: &'a [Challenge],
+    ) -> AirRegularProver<'a, Val, Challenge, A>
     where
         A: for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
             + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
@@ -161,33 +157,28 @@ where
         let zero_check_claim = self.zero_check_round_poly.subclaim(x)
             * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
         let eval_check_claim = self.eval_check_round_poly.subclaim(x);
-        let regular_rounds = self.trace.log_height() - self.skip_rounds;
         let trace = info_span!("fix univariate skip var").in_scope(|| {
             let lagrange_evals = lagrange_evals(self.skip_rounds, x);
             self.trace.fix_lo_scalars(&lagrange_evals)
         });
         let sels = selectors_at_point(self.skip_rounds, x);
-        RegularSumcheckProver {
-            air: self.air,
-            meta: self.meta,
-            public_values: self.public_values,
-            beta_powers: self.beta_powers,
-            gamma_powers: self.gamma_powers,
-            alpha_powers: self.alpha_powers,
-            eq_r_helper,
-            eq_z_fs_helper,
-            starting_round: max_regular_rounds - regular_rounds,
+        let mut regular_prover = AirRegularProver::new(
+            self.meta,
+            self.air,
+            self.public_values,
+            trace,
+            self.beta_powers,
+            self.gamma_powers,
+            self.alpha_powers,
             zero_check_claim,
             eval_check_claim,
-            trace,
-            is_first_row: IsFirstRow(sels.is_first_row),
-            is_last_row: IsLastRow(sels.is_last_row),
-            is_transition: IsTransition(sels.is_transition),
-            zero_check_round_poly: Default::default(),
-            eval_check_round_poly: Default::default(),
-            eq_r_z_eval: Challenge::ONE,
-            eq_z_fs_z_eval: Challenge::ONE,
-        }
+            zero_check_eq_helper,
+            z_fs,
+        );
+        regular_prover.is_first_row.0 = sels.is_first_row;
+        regular_prover.is_last_row.0 = sels.is_last_row;
+        regular_prover.is_transition.0 = sels.is_transition;
+        regular_prover
     }
 
     pub(crate) fn into_univariate_eval_prover<'b>(
@@ -196,11 +187,10 @@ where
         z: &[Challenge],
         evals: &[Challenge],
         gamma_powers: &'b [Challenge],
-        max_skip_rounds: usize,
     ) -> EvalSumcheckProver<'b, Challenge> {
         let claim = dot_product(cloned(evals), cloned(gamma_powers));
         let trace = info_span!("fix high vars").in_scope(|| match self.trace.fix_hi_vars(z) {
-            AirTrace::Extension(trace) => trace,
+            Trace::Extension(trace) => trace,
             _ => unimplemented!(),
         });
         let weight = lagrange_evals(self.skip_rounds, x);
@@ -209,7 +199,6 @@ where
             weight,
             gamma_powers,
             claim,
-            starting_round: max_skip_rounds - self.skip_rounds,
             round_poly: Default::default(),
         }
     }
@@ -220,8 +209,8 @@ where
         zero_check_values: &mut [Challenge::ExtensionPacking],
         eval_check_values: &mut [Challenge::ExtensionPacking],
         trace: RowMajorMatrixView<Val::Packing>,
-        eq_r_eval: Challenge::ExtensionPacking,
-        eq_z_fs_eval: Challenge::ExtensionPacking,
+        zero_check_eq_eval: Challenge::ExtensionPacking,
+        eval_check_eq_eval: Option<Challenge::ExtensionPacking>,
         sels: &LagrangeSelectors<Vec<Val>>,
         added_bits: usize,
         is_first_chunk: bool,
@@ -241,6 +230,7 @@ where
             Radix2DitParallel::default().coset_lde_batch(lde, added_bits, Val::GENERATOR)
         };
         if self.meta.has_interaction() {
+            let eval_check_eq_eval = eval_check_eq_eval.unwrap();
             zero_check_values
                 .par_iter_mut()
                 .zip(eval_check_values)
@@ -248,8 +238,8 @@ where
                 .for_each(|(row, (zero_check, eval_check))| {
                     let (zero_check_accumulator, eval_check_accumulator) =
                         self.eval(&trace_lde, sels, row, is_first_chunk, is_last_chunk);
-                    *zero_check += zero_check_accumulator * eq_r_eval;
-                    *eval_check += eval_check_accumulator * eq_z_fs_eval;
+                    *zero_check += zero_check_accumulator * zero_check_eq_eval;
+                    *eval_check += eval_check_accumulator * eval_check_eq_eval;
                 });
         } else {
             zero_check_values
@@ -258,11 +248,12 @@ where
                 .for_each(|(row, zero_check)| {
                     let (zero_check_accumulator, _) =
                         self.eval(&trace_lde, sels, row, is_first_chunk, is_last_chunk);
-                    *zero_check += zero_check_accumulator * eq_r_eval;
+                    *zero_check += zero_check_accumulator * zero_check_eq_eval;
                 });
         }
     }
 
+    #[inline]
     fn eval(
         &self,
         trace_lde: &impl Matrix<Val>,
