@@ -257,6 +257,7 @@ impl<Val: Field, Challenge: ExtensionField<Val>> Trace<Val, Challenge> {
     }
 
     pub(crate) fn into_evals(self) -> Vec<Challenge> {
+        debug_assert_eq!(self.log_height(), 0);
         let Self::Extension(trace) = self else {
             unreachable!()
         };

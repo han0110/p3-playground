@@ -10,9 +10,10 @@ use p3_field::{ExtensionField, TwoAdicField};
 use p3_matrix::dense::DenseMatrix;
 
 use crate::{
-    AirProof, EvalClaim, Fraction, FractionalSumProof, PiopProof, Proof, RSlice,
-    VerifierConstraintFolder, VerifyingKey, eq_eval, evaluate_ml_poly, evaluations_on_domain,
-    fix_var, lagrange_evals, random_linear_combine, selectors_at_point,
+    AirProof, EvalClaim, FS_ARITY, Fraction, FractionalSumProof, PiopProof, Proof, RSlice,
+    VerifierConstraintFolder, VerifyingKey, eq_eval, eval_fractional_sum_accumulator,
+    evaluate_ml_poly, evaluations_on_domain, fix_var, lagrange_evals, random_linear_combine,
+    selectors_at_point,
 };
 
 #[derive(Debug)]
@@ -122,11 +123,11 @@ where
                 && layer
                     .compressed_round_polys
                     .iter()
-                    .all(|compressed_round_poly| compressed_round_poly.0.len() <= 3)
+                    .all(|compressed_round_poly| compressed_round_poly.0.len() <= 1 + FS_ARITY)
                 && layer.evals.len() == vk.metas().len()
                 && izip!(vk.metas(), cloned(log_heights), &layer.evals).all(
                     |(meta, log_height, evals)| {
-                        rounds >= log_height || evals.len() == 4 * meta.interaction_count
+                        rounds >= log_height || evals.len() == 2 * meta.interaction_count * FS_ARITY
                     },
                 )
         })
@@ -138,9 +139,9 @@ where
         return Err(Error::NonZeroFractionalSum);
     }
 
-    proof.sums.iter().flatten().for_each(|sum| {
-        challenger.observe_algebra_element(sum.numer);
-        challenger.observe_algebra_element(sum.denom);
+    proof.sums.iter().flatten().for_each(|fraction| {
+        challenger.observe_algebra_element(fraction.numer);
+        challenger.observe_algebra_element(fraction.denom);
     });
 
     let mut claims = proof
@@ -159,45 +160,43 @@ where
             let alpha: Challenge = challenger.sample_algebra_element();
             let beta: Challenge = challenger.sample_algebra_element();
 
-            let mut claim = izip!(cloned(log_heights), &claims, beta.powers())
-                .filter(|(log_height, _, _)| rounds < *log_height)
-                .map(|(_, claim, beta_power)| {
-                    random_linear_combine(&claim.evals, alpha) * beta_power
-                })
-                .sum::<Challenge>();
-            let mut z = layer
-                .compressed_round_polys
-                .iter()
-                .map(|compressed_round_poly| {
-                    cloned(&compressed_round_poly.0)
-                        .for_each(|coeff| challenger.observe_algebra_element(coeff));
-                    let z_i = challenger.sample_algebra_element();
-                    claim = compressed_round_poly.subclaim(claim, z_i);
-                    z_i
-                })
-                .collect_vec();
-            let eval = izip!(vk.metas(), &claims, &layer.evals, beta.powers())
-                .map(|(meta, claim, evals, beta_power)| {
-                    if evals.is_empty() {
-                        return Challenge::ZERO;
-                    }
-                    let (lhs, rhs) = evals.split_at(2 * meta.interaction_count);
-                    izip!(lhs.iter().tuples(), rhs.iter().tuples())
-                        .map(|((n_l, d_l), (n_r, d_r))| {
-                            alpha * (*d_r * *n_l + *d_l * *n_r) + (*d_l * *d_r)
-                        })
-                        .reduce(|acc, item| acc * alpha.square() + item)
-                        .unwrap_or_default()
-                        * eq_eval(&claim.z, &z)
-                        * beta_power
-                })
-                .sum::<Challenge>();
-            if eval != claim {
-                return Err(Error::OodEvaluationMismatch);
-            }
+            let mut z = {
+                let mut claim = izip!(cloned(log_heights), &claims, beta.powers())
+                    .filter(|(log_height, _, _)| rounds < *log_height)
+                    .map(|(_, claim, beta_power)| {
+                        random_linear_combine(&claim.evals, alpha) * beta_power
+                    })
+                    .sum::<Challenge>();
+                let z = layer
+                    .compressed_round_polys
+                    .iter()
+                    .map(|compressed_round_poly| {
+                        cloned(&compressed_round_poly.0)
+                            .for_each(|coeff| challenger.observe_algebra_element(coeff));
+                        let z_i = challenger.sample_algebra_element();
+                        claim = compressed_round_poly.subclaim(claim, z_i);
+                        z_i
+                    })
+                    .collect_vec();
+                let eval = izip!(&claims, &layer.evals, beta.powers())
+                    .map(|(claim, evals, beta_power)| {
+                        if evals.is_empty() {
+                            return Challenge::ZERO;
+                        }
+                        eval_fractional_sum_accumulator(FS_ARITY, evals, alpha)
+                            * eq_eval(&claim.z, &z)
+                            * beta_power
+                    })
+                    .sum::<Challenge>();
+                if eval != claim {
+                    return Err(Error::OodEvaluationMismatch);
+                }
 
-            cloned(layer.evals.iter().flatten())
-                .for_each(|eval| challenger.observe_algebra_element(eval));
+                cloned(layer.evals.iter().flatten())
+                    .for_each(|eval| challenger.observe_algebra_element(eval));
+
+                z
+            };
 
             let z_first = challenger.sample_algebra_element();
             z.insert(0, z_first);

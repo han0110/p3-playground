@@ -168,7 +168,7 @@ where
         );
     }
 
-    let (mut layers, sums) = izip!(pk.metas(), inputs, traces)
+    let (sums, mut layers) = izip!(pk.metas(), inputs, traces)
         .map(|(meta, input, trace)| {
             fractional_sum_trace(meta, input, trace, beta_powers, gamma_powers)
                 .map(|input_layer| fractional_sum_layers(meta.interaction_count, input_layer))
@@ -176,9 +176,9 @@ where
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
-    sums.iter().flatten().for_each(|frac| {
-        challenger.observe_algebra_element(frac.numer);
-        challenger.observe_algebra_element(frac.denom);
+    sums.iter().flatten().for_each(|fraction| {
+        challenger.observe_algebra_element(fraction.numer);
+        challenger.observe_algebra_element(fraction.denom);
     });
 
     let max_interaction_count = pk.max_interaction_count();

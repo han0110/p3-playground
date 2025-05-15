@@ -8,8 +8,8 @@ use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
 
 use crate::{
-    CompressedRoundPoly, EqHelper, PackedExtensionValue, RingArray, RoundPoly, Trace, eq_eval,
-    split_base_and_vector,
+    CompressedRoundPoly, EqHelper, FS_ARITY, PackedExtensionValue, RingArray, RoundPoly, Trace,
+    eq_eval, fractional_sum_at_zero_and_inf, split_base_and_vector,
 };
 
 pub(crate) struct FractionalSumRegularProver<'a, Val: Field, Challenge: ExtensionField<Val>> {
@@ -44,23 +44,23 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
         }
     }
 
-    pub(crate) fn compute_round_poly(&mut self, round: usize) -> CompressedRoundPoly<Challenge> {
+    pub(crate) fn compute_round_poly(&mut self, log_b: usize) -> CompressedRoundPoly<Challenge> {
         let round_poly = match &self.trace {
-            Trace::Packing(_) => self.compute_eq_weighted_round_poly_packing(round),
+            Trace::Packing(_) => self.compute_eq_weighted_round_poly_packing(log_b),
             Trace::ExtensionPacking(_) => {
-                self.compute_eq_weighted_round_poly_extension_packing(round)
+                self.compute_eq_weighted_round_poly_extension_packing(log_b)
             }
-            Trace::Extension(_) => self.compute_eq_weighted_round_poly_extension(round),
+            Trace::Extension(_) => self.compute_eq_weighted_round_poly_extension(log_b),
         };
 
         self.round_poly = round_poly.clone();
 
         round_poly
-            .mul_by_scaled_eq(self.eq_eval, self.eq_helper.z_i(round))
+            .mul_by_scaled_eq(self.eq_eval, self.eq_helper.z_i(log_b))
             .into_compressed()
     }
 
-    fn compute_eq_weighted_round_poly_packing(&mut self, round: usize) -> RoundPoly<Challenge> {
+    fn compute_eq_weighted_round_poly_packing(&mut self, log_b: usize) -> RoundPoly<Challenge> {
         let Trace::Packing(trace) = &self.trace else {
             unreachable!()
         };
@@ -68,15 +68,15 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
         let RingArray([coeff_0, coeff_2]) = trace
             .par_row_chunks(2)
             .enumerate()
-            .map(|(row, chunk)| self.eval(chunk) * self.eq_helper.eval_packed(round, row))
+            .map(|(row, chunk)| self.eval(chunk) * self.eq_helper.eval_packed(log_b, row))
             .sum();
 
-        self.recover_eq_weighted_round_poly(round, coeff_0.ext_sum(), coeff_2.ext_sum())
+        self.recover_eq_weighted_round_poly(log_b, coeff_0.ext_sum(), coeff_2.ext_sum())
     }
 
     fn compute_eq_weighted_round_poly_extension_packing(
         &mut self,
-        round: usize,
+        log_b: usize,
     ) -> RoundPoly<Challenge> {
         let Trace::ExtensionPacking(trace) = &self.trace else {
             unreachable!()
@@ -85,13 +85,13 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
         let RingArray([coeff_0, coeff_2]) = trace
             .par_row_chunks(2)
             .enumerate()
-            .map(|(row, chunk)| self.eval(chunk) * self.eq_helper.eval_packed(round, row))
+            .map(|(row, chunk)| self.eval(chunk) * self.eq_helper.eval_packed(log_b, row))
             .sum();
 
-        self.recover_eq_weighted_round_poly(round, coeff_0.ext_sum(), coeff_2.ext_sum())
+        self.recover_eq_weighted_round_poly(log_b, coeff_0.ext_sum(), coeff_2.ext_sum())
     }
 
-    fn compute_eq_weighted_round_poly_extension(&mut self, round: usize) -> RoundPoly<Challenge> {
+    fn compute_eq_weighted_round_poly_extension(&mut self, log_b: usize) -> RoundPoly<Challenge> {
         let Trace::Extension(trace) = &self.trace else {
             unreachable!()
         };
@@ -99,10 +99,10 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
         let RingArray([coeff_0, coeff_2]) = trace
             .par_row_chunks(2)
             .enumerate()
-            .map(|(row, chunk)| self.eval(chunk) * self.eq_helper.eval(round, row))
+            .map(|(row, chunk)| self.eval(chunk) * self.eq_helper.eval(log_b, row))
             .sum();
 
-        self.recover_eq_weighted_round_poly(round, coeff_0, coeff_2)
+        self.recover_eq_weighted_round_poly(log_b, coeff_0, coeff_2)
     }
 
     fn eval<Var, VarEF>(&self, chunk: RowMajorMatrixView<Var>) -> RingArray<VarEF, 2>
@@ -112,29 +112,30 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
     {
         let lo = chunk.row_slice(0).unwrap();
         let hi = chunk.row_slice(1).unwrap();
-        let (lhs_lo, rhs_lo) = lo.split_at(lo.len() / 2);
-        let (lhs_hi, rhs_hi) = hi.split_at(hi.len() / 2);
+        let chunk_size = lo.len() / FS_ARITY;
         izip!(
-            lhs_lo.chunks(1 + VarEF::DIMENSION),
-            rhs_lo.chunks(1 + VarEF::DIMENSION),
-            lhs_hi.chunks(1 + VarEF::DIMENSION),
-            rhs_hi.chunks(1 + VarEF::DIMENSION),
+            lo[..chunk_size].chunks(1 + VarEF::DIMENSION),
+            lo[chunk_size..].chunks(1 + VarEF::DIMENSION),
+            hi[..chunk_size].chunks(1 + VarEF::DIMENSION),
+            hi[chunk_size..].chunks(1 + VarEF::DIMENSION),
             self.alpha_powers.chunks(2)
         )
-        .map(|(lhs_lo, rhs_lo, lhs_hi, rhs_hi, alpha_powers)| {
-            let (&n_l_lo, &d_l_lo) = split_base_and_vector::<_, VarEF>(lhs_lo);
-            let (&n_r_lo, &d_r_lo) = split_base_and_vector::<_, VarEF>(rhs_lo);
-            let (&n_l_hi, &d_l_hi) = split_base_and_vector::<_, VarEF>(lhs_hi);
-            let (&n_r_hi, &d_r_hi) = split_base_and_vector::<_, VarEF>(rhs_hi);
+        .map(|(f_lo_0, f_lo_1, f_hi_0, f_hi_1, alpha_powers)| {
+            let (n_0_lo, d_0_lo) = split_base_and_vector::<_, VarEF>(f_lo_0);
+            let (n_1_lo, d_1_lo) = split_base_and_vector::<_, VarEF>(f_lo_1);
+            let (n_0_hi, d_0_hi) = split_base_and_vector::<_, VarEF>(f_hi_0);
+            let (n_1_hi, d_1_hi) = split_base_and_vector::<_, VarEF>(f_hi_1);
+            let (n_0, d_0, n_inf, d_inf) = fractional_sum_at_zero_and_inf(
+                [n_0_lo, n_1_lo],
+                [d_0_lo, d_1_lo],
+                [n_0_hi, n_1_hi],
+                [d_0_hi, d_1_hi],
+            );
             let alpha_power_even = VarEF::from(alpha_powers[0]);
             let alpha_power_odd = VarEF::from(alpha_powers[1]);
             RingArray([
-                alpha_power_even * (d_r_lo * n_l_lo + d_l_lo * n_r_lo)
-                    + alpha_power_odd * (d_l_lo * d_r_lo),
-                alpha_power_even
-                    * ((d_r_hi - d_r_lo) * (n_l_hi - n_l_lo)
-                        + (d_l_hi - d_l_lo) * (n_r_hi - n_r_lo))
-                    + alpha_power_odd * ((d_l_hi - d_l_lo) * (d_r_hi - d_r_lo)),
+                alpha_power_even * n_0 + alpha_power_odd * d_0,
+                alpha_power_even * n_inf + alpha_power_odd * d_inf,
             ])
         })
         .sum::<RingArray<_, 2>>()
@@ -142,18 +143,18 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
 
     fn recover_eq_weighted_round_poly(
         &self,
-        round: usize,
+        log_b: usize,
         mut coeff_0: Challenge,
         mut coeff_2: Challenge,
     ) -> RoundPoly<Challenge> {
-        coeff_0 *= self.eq_helper.correcting_factor(round);
-        coeff_2 *= self.eq_helper.correcting_factor(round);
-        let eval_1 = self.eq_helper.recover_eval_1(round, self.claim, coeff_0);
+        coeff_0 *= self.eq_helper.correcting_factor(log_b);
+        coeff_2 *= self.eq_helper.correcting_factor(log_b);
+        let eval_1 = self.eq_helper.recover_eval_1(log_b, self.claim, coeff_0);
         let coeff_1 = eval_1 - coeff_0 - coeff_2;
         RoundPoly(vec![coeff_0, coeff_1, coeff_2])
     }
 
-    pub(crate) fn fix_var(&mut self, round: usize, z_i: Challenge) {
+    pub(crate) fn fix_var(&mut self, log_b: usize, z_i: Challenge) {
         self.trace = match &self.trace {
             Trace::Packing(trace) => {
                 let trace = RowMajorMatrix::new(
@@ -186,7 +187,7 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
             _ => self.trace.fix_var(z_i),
         };
         self.claim = self.round_poly.subclaim(z_i);
-        self.eq_eval *= eq_eval([&self.eq_helper.z_i(round)], [&z_i]);
+        self.eq_eval *= eq_eval([&self.eq_helper.z_i(log_b)], [&z_i]);
     }
 
     pub(crate) fn into_evals(self) -> Vec<Challenge> {

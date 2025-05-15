@@ -38,7 +38,7 @@ impl<Challenge: Field> Fraction<Challenge> {
     pub fn sum<'a>(fracs: impl IntoIterator<Item = &'a Self>) -> Challenge {
         let (numers, denoms) = fracs
             .into_iter()
-            .map(|frac| (frac.numer, frac.denom))
+            .map(|fraction| (fraction.numer, fraction.denom))
             .collect::<(Vec<_>, Vec<_>)>();
         dot_product(
             numers.into_iter(),

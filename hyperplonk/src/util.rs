@@ -14,7 +14,7 @@ use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
 use tracing::instrument;
 
-pub(crate) fn random_linear_combine<'a, EF: Field>(
+pub(crate) fn random_linear_combine<'a, EF: 'a + Copy + PrimeCharacteristicRing>(
     values: impl IntoIterator<Item = &'a EF>,
     r: EF,
 ) -> EF {
@@ -53,7 +53,7 @@ pub(crate) fn eq_poly_packed<F: Field, EF: ExtensionField<F>>(
 #[instrument(level = "debug", skip_all, fields(log_h = %z.len()))]
 pub fn eq_poly<EF, VarEF>(z: &[EF], scalar: VarEF) -> Vec<VarEF>
 where
-    EF: Field,
+    EF: Copy + Send + Sync + PrimeCharacteristicRing,
     VarEF: Copy + Send + Sync + Algebra<EF>,
 {
     let mut evals = vec![VarEF::ZERO; 1 << z.len()];
@@ -64,7 +64,7 @@ where
 
 pub(crate) fn eq_expand<EF, VarEF>(evals: &mut [VarEF], x_i: EF, i: usize)
 where
-    EF: Field,
+    EF: Copy + Send + Sync + PrimeCharacteristicRing,
     VarEF: Copy + Send + Sync + Algebra<EF>,
 {
     let (lo, hi) = evals[..2 << i].split_at_mut(1 << i);

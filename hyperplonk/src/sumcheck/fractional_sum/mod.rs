@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::iter::successors;
 use core::marker::PhantomData;
 
-use itertools::{Itertools, chain, izip};
+use itertools::{Itertools, izip};
 use p3_air::Air;
 use p3_air_ext::VerifierInput;
 use p3_field::{
@@ -16,12 +16,15 @@ use tracing::instrument;
 
 use crate::{
     AirMeta, Fraction, ProverInteractionFolderOnExtension, ProverInteractionFolderOnPacking, Trace,
-    split_base_and_vector,
+    random_linear_combine, split_base_and_vector,
 };
 
 mod regular;
 
 pub(crate) use regular::*;
+
+pub(crate) const FS_LOG_ARITY: usize = 1;
+pub(crate) const FS_ARITY: usize = 1 << FS_LOG_ARITY;
 
 #[instrument(skip_all)]
 pub(crate) fn fractional_sum_trace<Val, Challenge, A>(
@@ -86,7 +89,7 @@ where
 pub(crate) fn fractional_sum_layers<Val, Challenge>(
     fraction_count: usize,
     input_layer: Trace<Val, Challenge>,
-) -> (Vec<Trace<Val, Challenge>>, Vec<Fraction<Challenge>>)
+) -> (Vec<Fraction<Challenge>>, Vec<Trace<Val, Challenge>>)
 where
     Val: Field,
     Challenge: ExtensionField<Val>,
@@ -96,29 +99,35 @@ where
         (input.log_height() > 0).then(|| match input {
             Trace::Packing(input) => {
                 let mut output =
-                    RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / 2], width);
+                    RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / FS_ARITY], width);
                 output
                     .par_rows_mut()
-                    .zip(input.par_row_chunks(2))
-                    .for_each(|(output, input)| next_layer(output, input));
+                    .zip(input.par_row_chunks(FS_ARITY))
+                    .for_each(|(output, input)| {
+                        eval_fractional_sum_row(FS_ARITY, input.values, output)
+                    });
                 Trace::extension_packing(output)
             }
             Trace::ExtensionPacking(input) => {
                 let mut output =
-                    RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / 2], width);
+                    RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / FS_ARITY], width);
                 output
                     .par_rows_mut()
-                    .zip(input.par_row_chunks(2))
-                    .for_each(|(output, input)| next_layer(output, input));
+                    .zip(input.par_row_chunks(FS_ARITY))
+                    .for_each(|(output, input)| {
+                        eval_fractional_sum_row(FS_ARITY, input.values, output)
+                    });
                 Trace::extension_packing(output)
             }
             Trace::Extension(input) => {
                 let mut output =
-                    RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / 2], width);
+                    RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / FS_ARITY], width);
                 output
                     .par_rows_mut()
-                    .zip(input.par_row_chunks(2))
-                    .for_each(|(output, input)| next_layer(output, input));
+                    .zip(input.par_row_chunks(FS_ARITY))
+                    .for_each(|(output, input)| {
+                        eval_fractional_sum_row(FS_ARITY, input.values, output)
+                    });
                 Trace::Extension(output)
             }
         })
@@ -137,70 +146,136 @@ where
             .collect()
     };
 
+    let width = 2 * fraction_count * FS_ARITY;
     let layers = layers
         .into_iter()
-        .map(|layer| match layer {
-            Trace::Packing(layer) => {
-                if layer.height() > 2 {
-                    let width = 2 * layer.width();
-                    return Trace::Packing(RowMajorMatrix::new(layer.values, width));
+        .map(|layer| {
+            let layer = match layer {
+                Trace::Packing(layer) if layer.height() > FS_ARITY => {
+                    let width = (1 + Challenge::DIMENSION) * fraction_count * FS_ARITY;
+                    Trace::Packing(RowMajorMatrix::new(layer.values, width))
                 }
-
-                let lo = &layer.row_slice(0).unwrap();
-                let hi = &layer.row_slice(1).unwrap();
-                Trace::Extension(RowMajorMatrix::new(
+                Trace::Packing(layer) => Trace::Extension(RowMajorMatrix::new(
                     (0..Val::Packing::WIDTH)
                         .flat_map(|i| {
-                            chain![
-                                lo.chunks(1 + Challenge::DIMENSION),
-                                hi.chunks(1 + Challenge::DIMENSION),
-                            ]
-                            .flat_map(move |row| {
-                                let (numer, denom) =
-                                    split_base_and_vector::<_, <Challenge>::ExtensionPacking>(row);
-                                [
-                                    Challenge::from(numer.as_slice()[i]),
-                                    Challenge::from_basis_coefficients_fn(|j| {
-                                        denom.as_basis_coefficients_slice()[j].as_slice()[i]
-                                    }),
-                                ]
-                            })
+                            layer.values.chunks(1 + Challenge::DIMENSION).flat_map(
+                                move |fraction| {
+                                    let (numer, denom): (_, &Challenge::ExtensionPacking) =
+                                        split_base_and_vector(fraction);
+                                    [
+                                        Challenge::from(numer.as_slice()[i]),
+                                        Challenge::from_basis_coefficients_fn(|j| {
+                                            denom.as_basis_coefficients_slice()[j].as_slice()[i]
+                                        }),
+                                    ]
+                                },
+                            )
                         })
                         .collect_vec(),
-                    4 * fraction_count,
-                ))
-            }
-            Trace::ExtensionPacking(layer) => {
-                let width = 2 * layer.width();
-                Trace::extension_packing(RowMajorMatrix::new(layer.values, width))
-            }
-            Trace::Extension(layer) => {
-                let width = 2 * layer.width();
-                Trace::Extension(RowMajorMatrix::new(layer.values, width))
-            }
+                    width,
+                )),
+                Trace::ExtensionPacking(layer) => {
+                    Trace::extension_packing(RowMajorMatrix::new(layer.values, width))
+                }
+                Trace::Extension(layer) => {
+                    Trace::Extension(RowMajorMatrix::new(layer.values, width))
+                }
+            };
+            layer
         })
         .collect();
 
-    (layers, sums)
+    (sums, layers)
 }
 
 #[inline]
-fn next_layer<
+fn eval_fractional_sum_row<
     Base: Copy + Send + Sync + PrimeCharacteristicRing,
     VecrorSpace: Copy + Algebra<Base> + BasedVectorSpace<Base>,
 >(
+    arity: usize,
+    input: &[Base],
     output: &mut [VecrorSpace],
-    input: RowMajorMatrixView<Base>,
 ) {
-    let lhs = input.row_slice(0).unwrap();
-    let rhs = input.row_slice(1).unwrap();
-    let fractions_lhs = lhs.chunks(1 + VecrorSpace::DIMENSION);
-    let fractions_rhs = rhs.chunks(1 + VecrorSpace::DIMENSION);
-    let fractions_out = output.chunks_mut(2);
-    izip!(fractions_out, fractions_lhs, fractions_rhs,).for_each(|(out, lhs, rhs)| {
-        let (n_l, d_l) = split_base_and_vector::<_, VecrorSpace>(lhs);
-        let (n_r, d_r) = split_base_and_vector::<_, VecrorSpace>(rhs);
-        out[0] = *d_r * *n_l + *d_l * *n_r;
-        out[1] = *d_r * *d_l;
+    eval_fractional_sum(arity, input, output, |output, (numer, denom)| {
+        output[0] = numer;
+        output[1] = denom;
+        &mut output[2..]
+    });
+}
+
+#[inline]
+pub(crate) fn eval_fractional_sum_accumulator<Base, VecrorSpace>(
+    arity: usize,
+    input: &[Base],
+    alpha: VecrorSpace,
+) -> VecrorSpace
+where
+    Base: Copy + Send + Sync + PrimeCharacteristicRing,
+    VecrorSpace: Copy + Algebra<Base> + BasedVectorSpace<Base>,
+{
+    eval_fractional_sum(arity, input, VecrorSpace::ZERO, |acc, (numer, denom)| {
+        random_linear_combine(&[acc, numer, denom], alpha)
     })
+}
+
+#[inline]
+fn eval_fractional_sum<Base, VecrorSpace, T>(
+    arity: usize,
+    input: &[Base],
+    fold_init: T,
+    mut fold: impl FnMut(T, (VecrorSpace, VecrorSpace)) -> T,
+) -> T
+where
+    Base: Copy + Send + Sync + PrimeCharacteristicRing,
+    VecrorSpace: Copy + Algebra<Base> + BasedVectorSpace<Base>,
+{
+    let fraction_size = 1 + VecrorSpace::DIMENSION;
+    let chunk_size = input.len() / arity;
+    match arity {
+        2 => izip!(
+            input[..chunk_size].chunks(fraction_size),
+            input[chunk_size..].chunks(fraction_size),
+        )
+        .fold(fold_init, |acc, (f_0, f_1)| {
+            let (n_0, d_0) = split_base_and_vector::<_, VecrorSpace>(f_0);
+            let (n_1, d_1) = split_base_and_vector::<_, VecrorSpace>(f_1);
+            fold(acc, fractional_sum([n_0, n_1], [d_0, d_1]))
+        }),
+        _ => unimplemented!(),
+    }
+}
+
+#[inline]
+fn fractional_sum<Var: Copy, VarEF: Copy + Algebra<Var>, const N: usize>(
+    n: [&Var; N],
+    d: [&VarEF; N],
+) -> (VarEF, VarEF) {
+    match N {
+        2 => (*d[1] * *n[0] + *d[0] * *n[1], *d[0] * *d[1]),
+        _ => unimplemented!(),
+    }
+}
+
+#[inline]
+pub(crate) fn fractional_sum_at_zero_and_inf<
+    Var: Copy + PrimeCharacteristicRing,
+    VarEF: Copy + Algebra<Var>,
+    const N: usize,
+>(
+    n_lo: [&Var; N],
+    d_lo: [&VarEF; N],
+    n_hi: [&Var; N],
+    d_hi: [&VarEF; N],
+) -> (VarEF, VarEF, VarEF, VarEF) {
+    match N {
+        2 => (
+            *d_lo[1] * *n_lo[0] + *d_lo[0] * *n_lo[1],
+            *d_lo[0] * *d_lo[1],
+            (*d_hi[1] - *d_lo[1]) * (*n_hi[0] - *n_lo[0])
+                + (*d_hi[0] - *d_lo[0]) * (*n_hi[1] - *n_lo[1]),
+            (*d_hi[0] - *d_lo[0]) * (*d_hi[1] - *d_lo[1]),
+        ),
+        _ => unimplemented!(),
+    }
 }
