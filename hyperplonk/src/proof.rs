@@ -35,15 +35,18 @@ pub struct Fraction<Challenge> {
 }
 
 impl<Challenge: Field> Fraction<Challenge> {
-    pub fn sum<'a>(fracs: impl IntoIterator<Item = &'a Self>) -> Challenge {
+    pub fn sum<'a>(fracs: impl IntoIterator<Item = &'a Self>) -> Option<Challenge> {
         let (numers, denoms) = fracs
             .into_iter()
             .map(|fraction| (fraction.numer, fraction.denom))
             .collect::<(Vec<_>, Vec<_>)>();
-        dot_product(
+        if denoms.iter().any(|denom| *denom == Challenge::ZERO) {
+            return None;
+        }
+        Some(dot_product(
             numers.into_iter(),
             batch_multiplicative_inverse(&denoms).into_iter(),
-        )
+        ))
     }
 }
 

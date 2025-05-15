@@ -135,7 +135,7 @@ where
         return Err(Error::InvalidProofShape);
     }
 
-    if Fraction::sum(proof.sums.iter().flatten()) != Challenge::ZERO {
+    if Fraction::sum(proof.sums.iter().flatten()) != Some(Challenge::ZERO) {
         return Err(Error::NonZeroFractionalSum);
     }
 
