@@ -39,19 +39,12 @@ where
 
     // TODO: Observe commitment.
 
-    cloned(&proof.log_heights)
-        .for_each(|log_height| challenger.observe(Val::from_u8(log_height as u8)));
+    cloned(&proof.log_bs).for_each(|log_b| challenger.observe(Val::from_u8(log_b as u8)));
     inputs
         .iter()
         .for_each(|input| challenger.observe_slice(input.public_values()));
 
-    let _zs = verify_piop(
-        vk,
-        &inputs,
-        &proof.log_heights,
-        &proof.piop,
-        &mut challenger,
-    )?;
+    let _zs = verify_piop(vk, &inputs, &proof.log_bs, &proof.piop, &mut challenger)?;
 
     // TODO: PCS verify.
 
@@ -61,7 +54,7 @@ where
 pub fn verify_piop<Val, Challenge, A>(
     vk: &VerifyingKey,
     inputs: &[VerifierInput<Val, A>],
-    log_heights: &[usize],
+    log_bs: &[usize],
     proof: &PiopProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
 ) -> Result<Vec<Vec<Challenge>>, Error>
@@ -83,12 +76,12 @@ where
         .take(vk.max_bus_index() + 1)
         .collect_vec();
 
-    let claims_fs = verify_fractional_sum(vk, log_heights, &proof.fractional_sum, &mut challenger)?;
+    let claims_fs = verify_fractional_sum(vk, log_bs, &proof.fractional_sum, &mut challenger)?;
 
     let zs = verify_air(
         vk,
         inputs,
-        log_heights,
+        log_bs,
         &beta_powers,
         &gamma_powers,
         &claims_fs,
@@ -101,7 +94,7 @@ where
 
 fn verify_fractional_sum<Val, Challenge>(
     vk: &VerifyingKey,
-    log_heights: &[usize],
+    log_bs: &[usize],
     proof: &FractionalSumProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
 ) -> Result<Vec<EvalClaim<Challenge>>, Error>
@@ -113,11 +106,11 @@ where
         return Ok(vec![Default::default(); vk.metas.len()]);
     }
 
-    let max_log_height = itertools::max(cloned(log_heights)).unwrap();
+    let max_log_b = itertools::max(cloned(log_bs)).unwrap();
 
     if proof.sums.len() != vk.metas().len()
         || !izip!(vk.metas(), &proof.sums).all(|(meta, sums)| sums.len() == meta.interaction_count)
-        || proof.layers.len() != max_log_height
+        || proof.layers.len() != max_log_b
         || !proof.layers.iter().enumerate().all(|(rounds, layer)| {
             layer.compressed_round_polys.len() == rounds
                 && layer
@@ -125,11 +118,9 @@ where
                     .iter()
                     .all(|compressed_round_poly| compressed_round_poly.0.len() <= 1 + FS_ARITY)
                 && layer.evals.len() == vk.metas().len()
-                && izip!(vk.metas(), cloned(log_heights), &layer.evals).all(
-                    |(meta, log_height, evals)| {
-                        rounds >= log_height || evals.len() == 2 * meta.interaction_count * FS_ARITY
-                    },
-                )
+                && izip!(vk.metas(), cloned(log_bs), &layer.evals).all(|(meta, log_b, evals)| {
+                    rounds >= log_b || evals.len() == 2 * meta.interaction_count * FS_ARITY
+                })
         })
     {
         return Err(Error::InvalidProofShape);
@@ -161,8 +152,8 @@ where
             let beta: Challenge = challenger.sample_algebra_element();
 
             let mut z = {
-                let mut claim = izip!(cloned(log_heights), &claims, beta.powers())
-                    .filter(|(log_height, _, _)| rounds < *log_height)
+                let mut claim = izip!(cloned(log_bs), &claims, beta.powers())
+                    .filter(|(log_b, _, _)| *log_b > rounds)
                     .map(|(_, claim, beta_power)| {
                         random_linear_combine(&claim.evals, alpha) * beta_power
                     })
@@ -219,7 +210,7 @@ where
 fn verify_air<Val, Challenge, A>(
     vk: &VerifyingKey,
     inputs: &[VerifierInput<Val, A>],
-    log_heights: &[usize],
+    log_bs: &[usize],
     beta_powers: &[Challenge],
     gamma_powers: &[Challenge],
     claims_fs: &[EvalClaim<Challenge>],
@@ -236,25 +227,23 @@ where
         .iter()
         .map(|univariate_skip| univariate_skip.skip_rounds)
         .collect_vec();
-    let regular_rounds = izip!(cloned(log_heights), cloned(&skip_rounds))
-        .map(|(log_height, skip_rounds)| log_height.saturating_sub(skip_rounds))
+    let regular_rounds = izip!(cloned(log_bs), cloned(&skip_rounds))
+        .map(|(log_b, skip_rounds)| log_b.saturating_sub(skip_rounds))
         .collect_vec();
     let max_skip_rounds = itertools::max(cloned(&skip_rounds)).unwrap();
     let max_regular_rounds = itertools::max(cloned(&regular_rounds)).unwrap();
 
     if proof.univariate_skips.len() != vk.metas().len()
-        || !izip!(
-            vk.metas(),
-            cloned(log_heights),
-            cloned(&proof.univariate_skips)
+        || !izip!(vk.metas(), cloned(log_bs), cloned(&proof.univariate_skips)).all(
+            |(meta, log_b, univariate_skip)| {
+                univariate_skip.skip_rounds <= log_b
+                    && univariate_skip.zero_check_round_poly.0.len()
+                        <= meta.zero_check_uv_degree.saturating_sub(1)
+                            << univariate_skip.skip_rounds
+                    && univariate_skip.eval_check_round_poly.0.len()
+                        <= meta.eval_check_uv_degree << univariate_skip.skip_rounds
+            },
         )
-        .all(|(meta, log_height, univariate_skip)| {
-            univariate_skip.skip_rounds <= log_height
-                && univariate_skip.zero_check_round_poly.0.len()
-                    <= meta.zero_check_uv_degree.saturating_sub(1) << univariate_skip.skip_rounds
-                && univariate_skip.eval_check_round_poly.0.len()
-                    <= meta.eval_check_uv_degree << univariate_skip.skip_rounds
-        })
         || proof.regular.compressed_round_polys.len() != max_regular_rounds
         || !proof
             .regular

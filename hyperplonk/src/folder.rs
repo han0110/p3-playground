@@ -193,8 +193,7 @@ impl<'a, F: Field, EF: ExtensionField<F>> AirBuilder
     fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
         let x = x.into();
         let alpha_power = self.zero_check_alpha_powers[self.constraint_index];
-        self.zero_check_accumulator +=
-            ExtensionPacking(EF::ExtensionPacking::from(alpha_power)) * x;
+        self.zero_check_accumulator.0 += x.0 * alpha_power;
         self.constraint_index += 1;
     }
 }
@@ -227,20 +226,18 @@ impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
             numer = -numer;
         }
         let alpha_power = self.eval_check_alpha_powers[2 * self.interaction_index];
-        self.eval_check_accumulator.0 += EF::ExtensionPacking::from(alpha_power) * numer.0;
+        self.eval_check_accumulator.0 += numer.0 * alpha_power;
 
         let denom = {
             let mut fields = fields.into_iter();
-            EF::ExtensionPacking::from(self.gamma_powers[bus_index])
-                + fields.next().unwrap().into().0
+            fields.next().unwrap().into().0
                 + izip!(fields, self.beta_powers)
-                    .map(|(field, beta_power)| {
-                        EF::ExtensionPacking::from(*beta_power) * field.into().0
-                    })
+                    .map(|(field, beta_power)| field.into().0 * *beta_power)
                     .sum::<EF::ExtensionPacking>()
+                + self.gamma_powers[bus_index]
         };
         let alpha_power = self.eval_check_alpha_powers[2 * self.interaction_index + 1];
-        self.eval_check_accumulator.0 += EF::ExtensionPacking::from(alpha_power) * denom;
+        self.eval_check_accumulator.0 += denom * alpha_power;
 
         self.interaction_index += 1;
     }

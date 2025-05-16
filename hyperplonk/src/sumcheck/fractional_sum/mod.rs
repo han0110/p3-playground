@@ -96,7 +96,7 @@ where
 {
     let width = 2 * fraction_count;
     let mut layers = successors(Some(input_layer), |input| {
-        (input.log_height() > 0).then(|| match input {
+        (input.log_b() > 0).then(|| match input {
             Trace::Packing(input) => {
                 let mut output =
                     RowMajorMatrix::new(vec![<_>::ZERO; width * input.height() / FS_ARITY], width);

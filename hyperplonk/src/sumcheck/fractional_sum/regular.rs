@@ -6,6 +6,7 @@ use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteri
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
+use tracing::info_span;
 
 use crate::{
     CompressedRoundPoly, EqHelper, FS_ARITY, PackedExtensionValue, RingArray, RoundPoly, Trace,
@@ -108,7 +109,7 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
     fn eval<Var, VarEF>(&self, chunk: RowMajorMatrixView<Var>) -> RingArray<VarEF, 2>
     where
         Var: Copy + Send + Sync + PrimeCharacteristicRing,
-        VarEF: Copy + Algebra<Var> + From<Challenge> + BasedVectorSpace<Var>,
+        VarEF: Copy + Algebra<Var> + BasedVectorSpace<Var> + Algebra<Challenge> + From<Challenge>,
     {
         let lo = chunk.row_slice(0).unwrap();
         let hi = chunk.row_slice(1).unwrap();
@@ -131,11 +132,9 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
                 [n_0_hi, n_1_hi],
                 [d_0_hi, d_1_hi],
             );
-            let alpha_power_even = VarEF::from(alpha_powers[0]);
-            let alpha_power_odd = VarEF::from(alpha_powers[1]);
             RingArray([
-                alpha_power_even * n_0 + alpha_power_odd * d_0,
-                alpha_power_even * n_inf + alpha_power_odd * d_inf,
+                n_0 * alpha_powers[0] + d_0 * alpha_powers[1],
+                n_inf * alpha_powers[0] + d_inf * alpha_powers[1],
             ])
         })
         .sum::<RingArray<_, 2>>()
@@ -156,34 +155,34 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>>
 
     pub(crate) fn fix_var(&mut self, log_b: usize, z_i: Challenge) {
         self.trace = match &self.trace {
-            Trace::Packing(trace) => {
-                let trace = RowMajorMatrix::new(
-                    trace
-                        .par_row_chunks(2)
-                        .flat_map(|rows| {
-                            let (lo, hi) = rows.values.split_at(trace.width());
-                            lo.par_chunks(1 + Challenge::DIMENSION)
-                                .zip(hi.par_chunks(1 + Challenge::DIMENSION))
-                                .flat_map(|(lo, hi)| {
-                                    let (numer_lo, denom_lo) =
-                                        split_base_and_vector::<_, Challenge::ExtensionPacking>(lo);
-                                    let (numer_hi, denom_hi) =
-                                        split_base_and_vector::<_, Challenge::ExtensionPacking>(hi);
-                                    [
-                                        Challenge::ExtensionPacking::from(z_i)
-                                            * (*numer_hi - *numer_lo)
-                                            + *numer_lo,
-                                        Challenge::ExtensionPacking::from(z_i)
-                                            * (*denom_hi - *denom_lo)
-                                            + *denom_lo,
-                                    ]
-                                })
-                        })
-                        .collect(),
-                    4 * self.fraction_count,
+            Trace::Packing(trace) => info_span!("fix var", log_b).in_scope(|| {
+                let width = 4 * self.fraction_count;
+                let mut fixed = RowMajorMatrix::new(
+                    vec![Challenge::ExtensionPacking::ZERO; width * trace.height() / 2],
+                    width,
                 );
-                Trace::extension_packing(trace)
-            }
+                fixed
+                    .par_rows_mut()
+                    .zip(trace.par_row_chunks(2))
+                    .for_each(|(out, rows)| {
+                        let lo = rows.row_slice(0).unwrap();
+                        let hi = rows.row_slice(1).unwrap();
+                        out.par_chunks_mut(2)
+                            .zip(lo.par_chunks(1 + Challenge::DIMENSION))
+                            .zip(hi.par_chunks(1 + Challenge::DIMENSION))
+                            .for_each(|((out, lo), hi)| {
+                                let (numer_lo, denom_lo) =
+                                    split_base_and_vector::<_, Challenge::ExtensionPacking>(lo);
+                                let (numer_hi, denom_hi) =
+                                    split_base_and_vector::<_, Challenge::ExtensionPacking>(hi);
+                                out[0] = Challenge::ExtensionPacking::from(z_i)
+                                    * (*numer_hi - *numer_lo)
+                                    + *numer_lo;
+                                out[1] = (*denom_hi - *denom_lo) * z_i + *denom_lo;
+                            })
+                    });
+                Trace::extension_packing(fixed)
+            }),
             _ => self.trace.fix_var(z_i),
         };
         self.claim = self.round_poly.subclaim(z_i);

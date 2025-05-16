@@ -48,14 +48,14 @@ where
     crate::check_constraints(&inputs);
 
     let (inputs, traces) = inputs.into_iter().map_into().collect::<(Vec<_>, Vec<_>)>();
-    let log_heights = traces
+    let log_bs = traces
         .iter()
         .map(|mat| log2_strict_usize(mat.height()))
         .collect_vec();
 
     // TODO: PCS commit and observe.
 
-    cloned(&log_heights).for_each(|log_height| challenger.observe(Val::from_u8(log_height as u8)));
+    cloned(&log_bs).for_each(|log_b| challenger.observe(Val::from_u8(log_b as u8)));
     inputs
         .iter()
         .for_each(|input| challenger.observe_slice(input.public_values()));
@@ -84,7 +84,7 @@ where
             assert_eq!(trace.columnwise_dot_product(&eq_z), next);
         });
 
-    Proof { log_heights, piop }
+    Proof { log_bs, piop }
 }
 
 fn prove_piop<Val, Challenge, A>(
@@ -168,13 +168,15 @@ where
         );
     }
 
-    let (sums, mut layers) = izip!(pk.metas(), inputs, traces)
-        .map(|(meta, input, trace)| {
-            fractional_sum_trace(meta, input, trace, beta_powers, gamma_powers)
-                .map(|input_layer| fractional_sum_layers(meta.interaction_count, input_layer))
-                .unwrap_or_default()
-        })
-        .collect::<(Vec<_>, Vec<_>)>();
+    let (sums, mut layers) = info_span!("compute sums and layers").in_scope(|| {
+        izip!(pk.metas(), inputs, traces)
+            .map(|(meta, input, trace)| {
+                fractional_sum_trace(meta, input, trace, beta_powers, gamma_powers)
+                    .map(|input_layer| fractional_sum_layers(meta.interaction_count, input_layer))
+                    .unwrap_or_default()
+            })
+            .collect::<(Vec<_>, Vec<_>)>()
+    });
 
     sums.iter().flatten().for_each(|fraction| {
         challenger.observe_algebra_element(fraction.numer);
@@ -182,7 +184,7 @@ where
     });
 
     let max_interaction_count = pk.max_interaction_count();
-    let max_log_height = itertools::max(traces.iter().map(|trace| trace.log_height())).unwrap();
+    let max_log_b = itertools::max(traces.iter().map(|trace| trace.log_b())).unwrap();
 
     let mut claims = sums
         .iter()
@@ -194,7 +196,7 @@ where
                 .collect_vec(),
         })
         .collect_vec();
-    let layers = (0..max_log_height)
+    let layers = (0..max_log_b)
         .map(|rounds| {
             let alpha: Challenge = challenger.sample_algebra_element();
             let beta: Challenge = challenger.sample_algebra_element();
@@ -219,7 +221,7 @@ where
                 })
                 .collect_vec();
 
-            let (mut z, layer) = {
+            let (mut z, layer) = info_span!("regular rounds").in_scope(|| {
                 let (z, compressed_round_polys) = rev(0..rounds)
                     .map(|log_b| {
                         let compressed_round_polys = provers
@@ -266,7 +268,7 @@ where
                         evals,
                     },
                 )
-            };
+            });
 
             let z_first = challenger.sample_algebra_element();
             z.insert(0, z_first);
@@ -308,13 +310,13 @@ where
         .map(|trace| {
             // TODO: Find a better way to choose the optimal rounds to skip automatically.
             const SKIP_ROUNDS: usize = 6;
-            (trace.log_height() >= SKIP_ROUNDS + log2_strict_usize(Val::Packing::WIDTH))
+            (trace.log_b() >= SKIP_ROUNDS + log2_strict_usize(Val::Packing::WIDTH))
                 .then_some(SKIP_ROUNDS)
                 .unwrap_or_default()
         })
         .collect_vec();
     let regular_rounds = izip!(&traces, cloned(&skip_rounds))
-        .map(|(trace, skip_rounds)| trace.log_height() - skip_rounds)
+        .map(|(trace, skip_rounds)| trace.log_b() - skip_rounds)
         .collect_vec();
     let max_skip_rounds = itertools::max(cloned(&skip_rounds)).unwrap();
     let max_regular_rounds = itertools::max(cloned(&regular_rounds)).unwrap();
@@ -348,32 +350,34 @@ where
         })
         .collect_vec();
 
-    let univariate_skips = izip!(
-        pk.metas(),
-        univariate_skip_provers.iter_mut(),
-        cloned(&skip_rounds),
-        cloned(&regular_rounds),
-        claims_fs,
-    )
-    .map(|(meta, prover, skip_rounds, regular_rounds, claim_fs)| {
-        prover
-            .as_mut()
-            .map(|prover| {
-                let (zero_check_round_poly, eval_check_round_poly) = prover.compute_round_poly(
-                    z_zc.rslice(regular_rounds),
-                    meta.has_interaction()
-                        .then(|| claim_fs.z.rslice(regular_rounds))
-                        .unwrap_or_default(),
-                );
-                AirUnivariateSkipProof {
-                    skip_rounds,
-                    zero_check_round_poly,
-                    eval_check_round_poly,
-                }
-            })
-            .unwrap_or_default()
-    })
-    .collect_vec();
+    let univariate_skips = info_span!("univariate round").in_scope(|| {
+        izip!(
+            pk.metas(),
+            univariate_skip_provers.iter_mut(),
+            cloned(&skip_rounds),
+            cloned(&regular_rounds),
+            claims_fs,
+        )
+        .map(|(meta, prover, skip_rounds, regular_rounds, claim_fs)| {
+            prover
+                .as_mut()
+                .map(|prover| {
+                    let (zero_check_round_poly, eval_check_round_poly) = prover.compute_round_poly(
+                        z_zc.rslice(regular_rounds),
+                        meta.has_interaction()
+                            .then(|| claim_fs.z.rslice(regular_rounds))
+                            .unwrap_or_default(),
+                    );
+                    AirUnivariateSkipProof {
+                        skip_rounds,
+                        zero_check_round_poly,
+                        eval_check_round_poly,
+                    }
+                })
+                .unwrap_or_default()
+        })
+        .collect_vec()
+    });
 
     univariate_skips.iter().for_each(|univariate_skip| {
         challenger.observe(Val::from_u8(univariate_skip.skip_rounds as u8));
@@ -387,41 +391,43 @@ where
 
     let zero_check_eq_helper = EqHelper::new(&z_zc);
 
-    let mut regular_provers = izip!(
-        pk.metas(),
-        inputs,
-        &mut traces,
-        &univariate_skip_provers,
-        claims_fs,
-    )
-    .map(|(meta, input, trace, univariate_skip_prover, claim_fs)| {
-        if let Some(univariate_skip_prover) = univariate_skip_prover {
-            univariate_skip_prover.to_regular_prover(x, &zero_check_eq_helper, &claim_fs.z)
-        } else {
-            let eval_check_claim = dot_product::<Challenge, _, _>(
-                cloned(&claim_fs.evals),
-                cloned(alpha_powers.rslice(2 * meta.interaction_count)),
-            );
-            AirRegularProver::new(
-                meta,
-                input.air(),
-                input.public_values(),
-                mem::take(trace),
-                beta_powers,
-                gamma_powers,
-                alpha_powers.rslice(meta.alpha_power_count()),
-                Challenge::ZERO,
-                eval_check_claim,
-                &zero_check_eq_helper,
-                &claim_fs.z,
-            )
-        }
-    })
-    .collect_vec();
+    let mut regular_provers = info_span!("univariate to regular").in_scope(|| {
+        izip!(
+            pk.metas(),
+            inputs,
+            &mut traces,
+            &univariate_skip_provers,
+            claims_fs,
+        )
+        .map(|(meta, input, trace, univariate_skip_prover, claim_fs)| {
+            if let Some(univariate_skip_prover) = univariate_skip_prover {
+                univariate_skip_prover.to_regular_prover(x, &zero_check_eq_helper, &claim_fs.z)
+            } else {
+                let eval_check_claim = dot_product::<Challenge, _, _>(
+                    cloned(&claim_fs.evals),
+                    cloned(alpha_powers.rslice(2 * meta.interaction_count)),
+                );
+                AirRegularProver::new(
+                    meta,
+                    input.air(),
+                    input.public_values(),
+                    mem::take(trace),
+                    beta_powers,
+                    gamma_powers,
+                    alpha_powers.rslice(meta.alpha_power_count()),
+                    Challenge::ZERO,
+                    eval_check_claim,
+                    &zero_check_eq_helper,
+                    &claim_fs.z,
+                )
+            }
+        })
+        .collect_vec()
+    });
 
     let delta = challenger.sample_algebra_element::<Challenge>();
 
-    let (z_regular, regular) = {
+    let (z_regular, regular) = info_span!("regular rounds").in_scope(|| {
         let (z, compressed_round_polys) = rev(0..max_regular_rounds)
             .map(|log_b| {
                 let compressed_round_polys = regular_provers
@@ -458,7 +464,7 @@ where
                 evals,
             },
         )
-    };
+    });
 
     let eta: Challenge = challenger.sample_algebra_element();
     let theta: Challenge = challenger.sample_algebra_element();
@@ -469,28 +475,30 @@ where
         eta_powers
     };
 
-    let mut eval_provers = izip!(
-        pk.metas(),
-        univariate_skip_provers,
-        &regular.evals,
-        cloned(&regular_rounds)
-    )
-    .map(|(meta, prover, evals, regular_rounds)| {
-        prover.map(|prover| {
-            prover.into_univariate_eval_prover(
-                x,
-                z_regular.rslice(regular_rounds),
-                evals,
-                eta_powers.rslice(2 * meta.width),
-            )
+    let mut univariate_eval_provers = info_span!("univariate to univariate eval").in_scope(|| {
+        izip!(
+            pk.metas(),
+            univariate_skip_provers,
+            &regular.evals,
+            cloned(&regular_rounds)
+        )
+        .map(|(meta, prover, evals, regular_rounds)| {
+            prover.map(|prover| {
+                prover.into_univariate_eval_prover(
+                    x,
+                    z_regular.rslice(regular_rounds),
+                    evals,
+                    eta_powers.rslice(2 * meta.width),
+                )
+            })
         })
-    })
-    .collect_vec();
+        .collect_vec()
+    });
 
-    let (z_skip, univariate_eval_check) = {
+    let (z_skip, univariate_eval_check) = info_span!("univariate eval rounds").in_scope(|| {
         let (z, compressed_round_polys) = rev(0..max_skip_rounds)
             .map(|log_b| {
-                let compressed_round_polys = eval_provers
+                let compressed_round_polys = univariate_eval_provers
                     .iter_mut()
                     .map(|prover| {
                         prover
@@ -507,7 +515,7 @@ where
                     .for_each(|coeff| challenger.observe_algebra_element(coeff));
                 let z_i = challenger.sample_algebra_element();
 
-                eval_provers
+                univariate_eval_provers
                     .iter_mut()
                     .flatten()
                     .for_each(|prover| prover.fix_var(log_b, z_i));
@@ -515,7 +523,7 @@ where
                 (z_i, compressed_round_poly)
             })
             .collect::<(Vec<_>, Vec<_>)>();
-        let evals = eval_provers
+        let evals = univariate_eval_provers
             .into_iter()
             .map(|prover| prover.map(|prover| prover.into_evals()).unwrap_or_default())
             .collect_vec();
@@ -529,7 +537,7 @@ where
                 evals,
             },
         )
-    };
+    });
 
     let zs = izip!(skip_rounds, regular_rounds)
         .map(|(skip_rounds, regular_rounds)| {

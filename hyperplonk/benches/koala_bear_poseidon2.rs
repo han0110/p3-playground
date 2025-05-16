@@ -59,8 +59,8 @@ fn bench(c: &mut Criterion) {
     let air = &Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
     let (_, pk) = keygen([&air]);
 
-    for log_h in 19..22 {
-        group.bench_with_input(BenchmarkId::from_parameter(log_h), &log_h, |b, log_h| {
+    for log_b in 19..22 {
+        group.bench_with_input(BenchmarkId::from_parameter(log_b), &log_b, |b, log_b| {
             let trace = generate_trace_rows::<
                 _,
                 LinearLayers,
@@ -70,7 +70,7 @@ fn bench(c: &mut Criterion) {
                 HALF_FULL_ROUNDS,
                 PARTIAL_ROUNDS,
             >(
-                (0..1 << log_h).map(|_| rng.random()).collect(),
+                (0..1 << log_b).map(|_| rng.random()).collect(),
                 &round_constants,
                 0,
             );

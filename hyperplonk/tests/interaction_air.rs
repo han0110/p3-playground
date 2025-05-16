@@ -154,14 +154,14 @@ impl SendingAir {
 #[test]
 fn interaction() {
     let mut rng = StdRng::from_os_rng();
-    for ((log_h, constraint_degree), interaction_degree) in
+    for ((log_b, constraint_degree), interaction_degree) in
         (0..12).cartesian_product(0..4).cartesian_product(0..4)
     {
         let sending_air = SendingAir {
             constraint_degree,
             interaction_degree,
         };
-        let sending_trace = sending_air.generate_sending_trace(1 << log_h, &mut rng);
+        let sending_trace = sending_air.generate_sending_trace(1 << log_b, &mut rng);
         let receiving_trace = sending_air.generate_receiving_trace(&sending_trace);
 
         run::<Val, Challenge, _>(vec![

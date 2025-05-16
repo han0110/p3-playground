@@ -60,7 +60,7 @@ where
         zero_check_eq_helper: &'a EqHelper<'a, Val, Challenge>,
         z_fs: &'a [Challenge],
     ) -> Self {
-        let rounds = trace.log_height();
+        let rounds = trace.log_b();
         let eval_check_eq_helper = EqHelper::new(
             meta.has_interaction()
                 .then(|| z_fs.rslice(rounds))
@@ -89,7 +89,7 @@ where
     }
 
     pub(crate) fn compute_round_poly(&mut self, log_b: usize) -> CompressedRoundPoly<Challenge> {
-        if log_b + 1 != self.trace.log_height() {
+        if log_b + 1 != self.trace.log_b() {
             return CompressedRoundPoly::default();
         }
 
@@ -124,7 +124,12 @@ where
                 .unwrap_or_default()
     }
 
-    #[instrument(skip_all, name = "compute eq weighted round poly (packing)", fields(log_h = %self.trace.log_height()))]
+    #[instrument(
+        level = "debug",
+        name = "compute eq weighted round poly (packing)",
+        skip_all,
+        fields(log_b = log_b)
+    )]
     fn compute_eq_weighted_round_poly_packing(
         &mut self,
         log_b: usize,
@@ -171,7 +176,12 @@ where
         )
     }
 
-    #[instrument(skip_all, name = "compute eq weighted round poly (ext packing)", fields(log_h = %self.trace.log_height()))]
+    #[instrument(
+        level = "debug",
+        name = "compute eq weighted round poly (ext packing)",
+        skip_all,
+        fields(log_b = log_b)
+    )]
     fn compute_eq_weighted_round_poly_extension_packing(
         &mut self,
         log_b: usize,
@@ -218,7 +228,12 @@ where
         )
     }
 
-    #[instrument(skip_all, name = "compute eq weighted round poly (ext)", fields(log_h = %self.trace.log_height()))]
+    #[instrument(
+        level = "debug",
+        name = "compute eq weighted round poly (ext)",
+        skip_all,
+        fields(log_b = log_b)
+    )]
     fn compute_eq_weighted_round_poly_extension(
         &mut self,
         log_b: usize,
@@ -316,7 +331,7 @@ where
     }
 
     pub(crate) fn fix_var(&mut self, log_b: usize, z_i: Challenge) {
-        if log_b + 1 != self.trace.log_height() {
+        if log_b + 1 != self.trace.log_b() {
             return;
         }
 

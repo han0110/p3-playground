@@ -4,7 +4,7 @@ use core::array::from_fn;
 use core::iter::Sum;
 use core::ops::{Add, Mul};
 
-use itertools::{cloned, enumerate, rev, zip_eq};
+use itertools::{cloned, enumerate, izip, rev, zip_eq};
 use p3_field::{
     Algebra, ExtensionField, Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing,
 };
@@ -50,7 +50,7 @@ pub(crate) fn eq_poly_packed<F: Field, EF: ExtensionField<F>>(
     eq_poly(z_lo, EF::ExtensionPacking::from_ext_slice(&eq_z_hi))
 }
 
-#[instrument(level = "debug", skip_all, fields(log_h = %z.len()))]
+#[instrument(level = "debug", skip_all, fields(log_b = %z.len()))]
 pub fn eq_poly<EF, VarEF>(z: &[EF], scalar: VarEF) -> Vec<VarEF>
 where
     EF: Copy + Send + Sync + PrimeCharacteristicRing,
@@ -81,23 +81,41 @@ pub fn eq_eval<'a, EF: Field>(
     EF::product(zip_eq(x, y).map(|(&x, &y)| (x * y).double() + EF::ONE - x - y))
 }
 
-#[instrument(level = "debug", skip_all, fields(log_h = %mat.height().ilog2()))]
+#[instrument(level = "debug", skip_all, fields(log_b = %mat.height().ilog2()))]
 pub(crate) fn fix_var<Var, VarEF>(mat: RowMajorMatrixView<Var>, z_i: VarEF) -> RowMajorMatrix<VarEF>
 where
     Var: Copy + Send + Sync + PrimeCharacteristicRing,
     VarEF: Copy + Send + Sync + Algebra<Var>,
 {
-    RowMajorMatrix::new(
-        mat.par_row_chunks(2)
-            .flat_map(|rows| {
-                let (lo, hi) = rows.values.split_at(mat.width());
-                lo.into_par_iter()
-                    .zip(hi)
-                    .map(|(lo, hi)| z_i * (*hi - *lo) + *lo)
-            })
-            .collect(),
-        mat.width(),
-    )
+    let mut fixed = RowMajorMatrix::new(vec![VarEF::ZERO; mat.values.len() / 2], mat.width());
+    fixed
+        .par_rows_mut()
+        .zip(mat.par_row_chunks(2))
+        .for_each(|(out, rows)| {
+            izip!(out, rows.row(0).unwrap(), rows.row(1).unwrap())
+                .for_each(|(out, lo, hi)| *out = z_i * (hi - lo) + lo)
+        });
+    fixed
+}
+
+#[instrument(level = "debug", skip_all, fields(log_b = %mat.height().ilog2()))]
+pub(crate) fn fix_var_extension_packing<Var, VarEF>(
+    mat: RowMajorMatrixView<VarEF>,
+    z_i: Var,
+) -> RowMajorMatrix<VarEF>
+where
+    Var: Copy + Send + Sync,
+    VarEF: Copy + Send + Sync + Algebra<Var>,
+{
+    let mut fixed = RowMajorMatrix::new(vec![VarEF::ZERO; mat.values.len() / 2], mat.width());
+    fixed
+        .par_rows_mut()
+        .zip(mat.par_row_chunks(2))
+        .for_each(|(out, rows)| {
+            izip!(out, rows.row(0).unwrap(), rows.row(1).unwrap())
+                .for_each(|(out, lo, hi)| *out = (hi - lo) * z_i + lo)
+        });
+    fixed
 }
 
 pub(crate) trait PackedExtensionValue<F: Field, EF: ExtensionField<F, ExtensionPacking = Self>>:
@@ -184,6 +202,12 @@ pub trait FieldSlice<F: Copy + PrimeCharacteristicRing>: AsMut<[F]> {
 }
 
 impl<F: Copy + PrimeCharacteristicRing> FieldSlice<F> for [F] {}
+
+#[inline]
+pub(crate) fn vec_add<F: Copy + PrimeCharacteristicRing>(mut lhs: Vec<F>, rhs: Vec<F>) -> Vec<F> {
+    lhs.slice_add_assign(&rhs);
+    lhs
+}
 
 #[inline]
 pub(crate) fn vec_pair_add<F: Copy + PrimeCharacteristicRing>(

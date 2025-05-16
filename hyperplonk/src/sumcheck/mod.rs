@@ -13,10 +13,11 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_util::log2_strict_usize;
-use tracing::info_span;
+use tracing::{info_span, instrument};
 
 use crate::{
     CompressedRoundPoly, FieldSlice, PackedExtensionValue, RoundPoly, eq_poly_packed, fix_var,
+    fix_var_extension_packing, vec_add,
 };
 
 mod air;
@@ -257,14 +258,14 @@ impl<Val: Field, Challenge: ExtensionField<Val>> Trace<Val, Challenge> {
     }
 
     pub(crate) fn into_evals(self) -> Vec<Challenge> {
-        debug_assert_eq!(self.log_height(), 0);
+        debug_assert_eq!(self.log_b(), 0);
         let Self::Extension(trace) = self else {
             unreachable!()
         };
         trace.values
     }
 
-    pub(crate) fn log_height(&self) -> usize {
+    pub(crate) fn log_b(&self) -> usize {
         match self {
             Self::Packing(trace) => {
                 log2_strict_usize(trace.height()) + log2_strict_usize(Val::Packing::WIDTH)
@@ -281,13 +282,14 @@ impl<Val: Field, Challenge: ExtensionField<Val>> Trace<Val, Challenge> {
         match self {
             Self::Packing(trace) => Self::extension_packing(fix_var(trace.as_view(), z_i.into())),
             Self::ExtensionPacking(trace) => {
-                Self::extension_packing(fix_var(trace.as_view(), z_i.into()))
+                Self::extension_packing(fix_var_extension_packing(trace.as_view(), z_i))
             }
             Self::Extension(trace) => Self::Extension(fix_var(trace.as_view(), z_i)),
         }
     }
 
     #[must_use]
+    #[instrument(skip_all, fields(log_b = self.log_b()))]
     fn fix_lo_scalars(&self, scalars: &[Challenge]) -> Self {
         match self {
             Self::Packing(trace) => {
@@ -313,23 +315,26 @@ impl<Val: Field, Challenge: ExtensionField<Val>> Trace<Val, Challenge> {
     }
 
     #[must_use]
+    #[instrument(skip_all, fields(log_b = self.log_b()))]
     fn fix_hi_vars(&self, z: &[Challenge]) -> Self {
         match self {
             Self::Packing(trace) if z.len() >= log2_strict_usize(Val::Packing::WIDTH) => {
                 let eq_z_packed = eq_poly_packed(z);
+                let packed_len = trace.values.len() / eq_z_packed.len();
                 let fixed = RowMajorMatrix::new(
-                    (0..trace.values.len() / eq_z_packed.len())
-                        .into_par_iter()
-                        .map(|i| {
-                            (i..trace.values.len())
-                                .into_par_iter()
-                                .step_by(trace.values.len() / eq_z_packed.len())
-                                .zip(&eq_z_packed)
-                                .map(|(idx, scalar)| *scalar * trace.values[idx])
-                                .sum::<Challenge::ExtensionPacking>()
-                                .ext_sum()
-                        })
-                        .collect(),
+                    trace
+                        .values
+                        .par_chunks(packed_len)
+                        .zip(&eq_z_packed)
+                        .par_fold_reduce(
+                            || vec![Challenge::ZERO; packed_len],
+                            |mut acc, (chunk, &scalar)| {
+                                izip!(&mut acc, chunk)
+                                    .for_each(|(lhs, rhs)| *lhs += (scalar * *rhs).ext_sum());
+                                acc
+                            },
+                            vec_add,
+                        ),
                     trace.width(),
                 );
                 Self::Extension(fixed)

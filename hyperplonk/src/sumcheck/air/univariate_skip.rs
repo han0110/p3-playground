@@ -15,10 +15,10 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
 use p3_util::log2_ceil_usize;
-use tracing::{info_span, instrument};
+use tracing::instrument;
 
 use crate::{
-    AirMeta, AirRegularProver, EqHelper, EvalSumcheckProver, FieldSlice, PackedExtensionValue,
+    AirMeta, AirRegularProver, EqHelper, EvalProver, FieldSlice, PackedExtensionValue,
     ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
     ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking, RoundPoly, Trace,
     eq_poly_packed, vec_pair_add,
@@ -68,7 +68,7 @@ where
         }
     }
 
-    #[instrument(skip_all, name = "compute univariate skip round poly", fields(log_h = %self.trace.log_height()))]
+    #[instrument(name = "compute univariate skip round poly", skip_all, fields(log_b = %self.trace.log_b()))]
     pub(crate) fn compute_round_poly(
         &mut self,
         z_zc: &[Challenge],
@@ -157,10 +157,10 @@ where
         let zero_check_claim = self.zero_check_round_poly.subclaim(x)
             * (x.exp_power_of_2(self.skip_rounds) - Val::ONE);
         let eval_check_claim = self.eval_check_round_poly.subclaim(x);
-        let trace = info_span!("fix univariate skip var").in_scope(|| {
+        let trace = {
             let lagrange_evals = lagrange_evals(self.skip_rounds, x);
             self.trace.fix_lo_scalars(&lagrange_evals)
-        });
+        };
         let sels = selectors_at_point(self.skip_rounds, x);
         let mut regular_prover = AirRegularProver::new(
             self.meta,
@@ -187,14 +187,14 @@ where
         z: &[Challenge],
         evals: &[Challenge],
         gamma_powers: &'b [Challenge],
-    ) -> EvalSumcheckProver<'b, Challenge> {
+    ) -> EvalProver<'b, Challenge> {
         let claim = dot_product(cloned(evals), cloned(gamma_powers));
-        let trace = info_span!("fix high vars").in_scope(|| match self.trace.fix_hi_vars(z) {
+        let trace = match self.trace.fix_hi_vars(z) {
             Trace::Extension(trace) => trace,
             _ => unimplemented!(),
-        });
+        };
         let weight = lagrange_evals(self.skip_rounds, x);
-        EvalSumcheckProver {
+        EvalProver {
             trace,
             weight,
             gamma_powers,
@@ -339,17 +339,17 @@ pub(crate) fn selectors_at_point<Val: TwoAdicField, Challenge: ExtensionField<Va
 }
 
 pub(crate) fn lagrange_evals<Val: TwoAdicField, Challenge: ExtensionField<Val>>(
-    log_height: usize,
+    skip_rounds: usize,
     z: Challenge,
 ) -> Vec<Challenge> {
     let subgroup = cyclic_subgroup_coset_known_order(
-        Val::two_adic_generator(log_height),
+        Val::two_adic_generator(skip_rounds),
         Val::ONE,
-        1 << log_height,
+        1 << skip_rounds,
     )
     .collect_vec();
-    let vanishing_over_height = (z.exp_power_of_2(log_height) - Challenge::ONE)
-        * Val::ONE.halve().exp_u64(log_height as u64);
+    let vanishing_over_height = (z.exp_power_of_2(skip_rounds) - Challenge::ONE)
+        * Val::ONE.halve().exp_u64(skip_rounds as u64);
     let diff_invs =
         batch_multiplicative_inverse(&subgroup.par_iter().map(|&x| z - x).collect::<Vec<_>>());
     subgroup

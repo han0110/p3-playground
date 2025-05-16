@@ -10,7 +10,7 @@ use crate::{FieldSlice, evaluate_uv_poly};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Proof<Challenge> {
-    pub log_heights: Vec<usize>,
+    pub log_bs: Vec<usize>,
     // pub commitments: Commitments,
     pub piop: PiopProof<Challenge>,
     // pub pcs: PcsProof<Challenge>,

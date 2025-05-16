@@ -11,7 +11,7 @@ use tracing::instrument;
 
 use crate::{CompressedRoundPoly, RingArray, RoundPoly, fix_var};
 
-pub(crate) struct EvalSumcheckProver<'a, Challenge> {
+pub(crate) struct EvalProver<'a, Challenge> {
     pub(crate) trace: RowMajorMatrix<Challenge>,
     pub(crate) weight: Vec<Challenge>,
     pub(crate) gamma_powers: &'a [Challenge],
@@ -19,8 +19,13 @@ pub(crate) struct EvalSumcheckProver<'a, Challenge> {
     pub(crate) round_poly: RoundPoly<Challenge>,
 }
 
-impl<Challenge: Field> EvalSumcheckProver<'_, Challenge> {
-    #[instrument(skip_all, name = "compute eval round poly", fields(log_h = %self.log_height()))]
+impl<Challenge: Field> EvalProver<'_, Challenge> {
+    #[instrument(
+        level = "debug",
+        name = "compute eval round poly",
+        skip_all,
+        fields(log_b = log_b)
+    )]
     pub(crate) fn compute_round_poly(&mut self, log_b: usize) -> CompressedRoundPoly<Challenge> {
         if log_b + 1 != log2_strict_usize(self.trace.height()) {
             return CompressedRoundPoly::default();
@@ -59,9 +64,5 @@ impl<Challenge: Field> EvalSumcheckProver<'_, Challenge> {
 
     pub(crate) fn into_evals(self) -> Vec<Challenge> {
         self.trace.values
-    }
-
-    fn log_height(&self) -> usize {
-        log2_strict_usize(self.trace.height())
     }
 }

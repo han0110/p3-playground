@@ -62,7 +62,7 @@ impl<AB: AirBuilderWithPublicValues> Air<AB> for MyAir {
 impl MyAir {
     fn generate_trace_rows<F: Field>(
         &self,
-        log_h: usize,
+        log_b: usize,
         mut rng: impl RngCore,
     ) -> (RowMajorMatrix<F>, F)
     where
@@ -71,7 +71,7 @@ impl MyAir {
         let width = BaseAir::<F>::width(self);
         let mut output = None;
         let input = RowMajorMatrix::new(
-            (0..1 << log_h)
+            (0..1 << log_b)
                 .flat_map(|_| {
                     let row = chain![output, repeat_with(|| rng.random())]
                         .take(width)
@@ -92,9 +92,9 @@ impl MyAir {
 #[test]
 fn single_sum() {
     let mut rng = StdRng::from_os_rng();
-    for (log_h, width) in (0..12).cartesian_product(1..5) {
+    for (log_b, width) in (0..12).cartesian_product(1..5) {
         let air = MyAir::GrandSum { width };
-        let (trace, output) = air.generate_trace_rows(log_h, &mut rng);
+        let (trace, output) = air.generate_trace_rows(log_b, &mut rng);
         let public_values = vec![output];
         run::<Val, Challenge, _>(vec![ProverInput::new(air, public_values, trace)]);
     }
@@ -103,9 +103,9 @@ fn single_sum() {
 #[test]
 fn single_product() {
     let mut rng = StdRng::from_os_rng();
-    for (log_h, width) in (0..12).cartesian_product(1..5) {
+    for (log_b, width) in (0..12).cartesian_product(1..5) {
         let air = MyAir::GrandProduct { width };
-        let (trace, output) = air.generate_trace_rows(log_h, &mut rng);
+        let (trace, output) = air.generate_trace_rows(log_b, &mut rng);
         let public_values = vec![output];
         run::<Val, Challenge, _>(vec![ProverInput::new(air, public_values, trace)]);
     }
@@ -119,13 +119,13 @@ fn multiple_mixed() {
         run::<Val, Challenge, _>(
             (0..n)
                 .map(|_| {
-                    let log_h = rng.random_range(0..12);
+                    let log_b = rng.random_range(0..12);
                     let width = rng.random_range(1..5);
                     let air = match rng.random_bool(0.5) {
                         false => MyAir::GrandSum { width },
                         true => MyAir::GrandProduct { width },
                     };
-                    let (trace, output) = air.generate_trace_rows(log_h, &mut rng);
+                    let (trace, output) = air.generate_trace_rows(log_b, &mut rng);
                     let public_values = vec![output];
                     ProverInput::new(air, public_values, trace)
                 })
