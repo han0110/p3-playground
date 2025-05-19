@@ -6,7 +6,7 @@ use p3_field::{BasedVectorSpace, PackedField};
 use p3_matrix::dense::RowMajorMatrixView;
 
 use crate::{
-    InteractionAirBuilder, InteractionType, PackedChallenge, PackedVal, StarkGenericConfig, Val,
+    InteractionBuilder, InteractionType, PackedChallenge, PackedVal, StarkGenericConfig, Val,
     ViewPair,
 };
 
@@ -122,7 +122,7 @@ impl<SC: StarkGenericConfig> ExtensionBuilder for ProverConstraintFolder<'_, SC>
     }
 }
 
-impl<SC: StarkGenericConfig> InteractionAirBuilder for ProverConstraintFolder<'_, SC> {
+impl<SC: StarkGenericConfig> InteractionBuilder for ProverConstraintFolder<'_, SC> {
     const ONLY_INTERACTION: bool = false;
 
     #[inline]
@@ -208,7 +208,7 @@ impl<SC: StarkGenericConfig> ExtensionBuilder for VerifierConstraintFolder<'_, S
     }
 }
 
-impl<SC: StarkGenericConfig> InteractionAirBuilder for VerifierConstraintFolder<'_, SC> {
+impl<SC: StarkGenericConfig> InteractionBuilder for VerifierConstraintFolder<'_, SC> {
     const ONLY_INTERACTION: bool = false;
 
     fn push_interaction(

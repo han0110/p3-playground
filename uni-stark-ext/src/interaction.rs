@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use itertools::{Itertools, izip};
 use p3_air::{AirBuilder, AirBuilderWithPublicValues, ExtensionBuilder};
-use p3_air_ext::{InteractionAirBuilder, InteractionType, ViewPair};
+use p3_air_ext::{InteractionBuilder, InteractionType, ViewPair};
 use p3_field::{ExtensionField, Field};
 
 pub struct ProverInteractionFolder<'a, Val, Challenge> {
@@ -62,7 +62,7 @@ where
     }
 }
 
-impl<Val, Challenge> InteractionAirBuilder for ProverInteractionFolder<'_, Val, Challenge>
+impl<Val, Challenge> InteractionBuilder for ProverInteractionFolder<'_, Val, Challenge>
 where
     Val: Field,
     Challenge: ExtensionField<Val>,

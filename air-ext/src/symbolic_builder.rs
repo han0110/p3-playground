@@ -8,7 +8,7 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use crate::symbolic_expression::SymbolicExpression;
 use crate::symbolic_variable::SymbolicVariable;
-use crate::{Entry, Interaction, InteractionAirBuilder, InteractionType};
+use crate::{Entry, Interaction, InteractionBuilder, InteractionType};
 
 /// An `AirBuilder` for evaluating constraints symbolically, and recording them for later use.
 #[derive(Debug)]
@@ -110,7 +110,7 @@ impl<F: Field> PairBuilder for SymbolicAirBuilder<F> {
     }
 }
 
-impl<F: Field> InteractionAirBuilder for SymbolicAirBuilder<F> {
+impl<F: Field> InteractionBuilder for SymbolicAirBuilder<F> {
     const ONLY_INTERACTION: bool = false;
 
     fn push_interaction(

@@ -4,7 +4,7 @@ use core::ops::*;
 
 use itertools::izip;
 use p3_air::{AirBuilder, AirBuilderWithPublicValues};
-use p3_air_ext::{InteractionAirBuilder, InteractionType};
+use p3_air_ext::{InteractionBuilder, InteractionType};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing};
 use p3_matrix::dense::RowMajorMatrixView;
 
@@ -97,8 +97,7 @@ where
     }
 }
 
-impl<F, EF, Var, VarEF> InteractionAirBuilder
-    for ProverConstraintFolderGeneric<'_, F, EF, Var, VarEF>
+impl<F, EF, Var, VarEF> InteractionBuilder for ProverConstraintFolderGeneric<'_, F, EF, Var, VarEF>
 where
     F: Field,
     EF: ExtensionField<F>,
@@ -209,7 +208,7 @@ impl<F: Field, EF: ExtensionField<F>> AirBuilderWithPublicValues
     }
 }
 
-impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
+impl<F: Field, EF: ExtensionField<F>> InteractionBuilder
     for ProverConstraintFolderOnExtensionPacking<'_, F, EF>
 {
     const ONLY_INTERACTION: bool = false;
@@ -456,9 +455,7 @@ impl<F: Field, EF: ExtensionField<F>> AirBuilderWithPublicValues
     }
 }
 
-impl<F: Field, EF: ExtensionField<F>> InteractionAirBuilder
-    for VerifierConstraintFolder<'_, F, EF>
-{
+impl<F: Field, EF: ExtensionField<F>> InteractionBuilder for VerifierConstraintFolder<'_, F, EF> {
     const ONLY_INTERACTION: bool = false;
 
     fn push_interaction(

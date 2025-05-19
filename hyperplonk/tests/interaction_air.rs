@@ -3,7 +3,7 @@ use core::iter::Product;
 
 use itertools::{Itertools, cloned};
 use p3_air::{Air, BaseAir, BaseAirWithPublicValues};
-use p3_air_ext::{InteractionAirBuilder, ProverInput};
+use p3_air_ext::{InteractionBuilder, ProverInput};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Algebra, Field, PrimeCharacteristicRing};
 use p3_koala_bear::KoalaBear;
@@ -30,7 +30,7 @@ impl<F> BaseAir<F> for SendingAir {
     }
 }
 
-impl<AB: InteractionAirBuilder> Air<AB> for SendingAir {
+impl<AB: InteractionBuilder> Air<AB> for SendingAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let local = main.row_slice(0).unwrap();
@@ -57,7 +57,7 @@ impl<F> BaseAir<F> for ReceivingAir {
     }
 }
 
-impl<AB: InteractionAirBuilder> Air<AB> for ReceivingAir {
+impl<AB: InteractionBuilder> Air<AB> for ReceivingAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let local = main.row_slice(0).unwrap();
@@ -83,7 +83,7 @@ impl<F> BaseAir<F> for MyAir {
 
 impl<F> BaseAirWithPublicValues<F> for MyAir {}
 
-impl<AB: InteractionAirBuilder> Air<AB> for MyAir {
+impl<AB: InteractionBuilder> Air<AB> for MyAir {
     fn eval(&self, builder: &mut AB) {
         match self {
             Self::Sending(inner) => inner.eval(builder),

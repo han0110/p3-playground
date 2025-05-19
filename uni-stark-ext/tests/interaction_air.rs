@@ -12,7 +12,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark_ext::{
-    InteractionAirBuilder, ProverInput, StarkConfig, VerifierInput, keygen, prove, verify,
+    InteractionBuilder, ProverInput, StarkConfig, VerifierInput, keygen, prove, verify,
 };
 use rand::{Rng, rng};
 
@@ -24,7 +24,7 @@ impl<F> BaseAir<F> for SendingAir {
     }
 }
 
-impl<AB: InteractionAirBuilder> Air<AB> for SendingAir {
+impl<AB: InteractionBuilder> Air<AB> for SendingAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let local = main.row_slice(0).unwrap();
@@ -43,7 +43,7 @@ impl<F> BaseAir<F> for ReceivingAir {
     }
 }
 
-impl<AB: InteractionAirBuilder> Air<AB> for ReceivingAir {
+impl<AB: InteractionBuilder> Air<AB> for ReceivingAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let local = main.row_slice(0).unwrap();
@@ -74,7 +74,7 @@ impl<F> BaseAirWithPublicValues<F> for MyAir {
     }
 }
 
-impl<AB: InteractionAirBuilder> Air<AB> for MyAir {
+impl<AB: InteractionBuilder> Air<AB> for MyAir {
     fn eval(&self, builder: &mut AB) {
         match self {
             Self::Sending(inner) => inner.eval(builder),

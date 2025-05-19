@@ -11,7 +11,7 @@ use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
 use tracing::instrument;
 
-use crate::{InteractionAirBuilder, InteractionType, ProverInput};
+use crate::{InteractionBuilder, InteractionType, ProverInput};
 
 #[instrument(name = "check constraints", skip_all)]
 pub fn check_constraints<F, A>(prover_inputs: &[ProverInput<F, A>])
@@ -158,7 +158,7 @@ impl<F: Field> AirBuilderWithPublicValues for DebugConstraintBuilder<'_, F> {
     }
 }
 
-impl<F: Field> InteractionAirBuilder for DebugConstraintBuilder<'_, F> {
+impl<F: Field> InteractionBuilder for DebugConstraintBuilder<'_, F> {
     const ONLY_INTERACTION: bool = false;
 
     fn push_interaction(

@@ -3,7 +3,7 @@ use core::ops::Deref;
 use p3_air::{AirBuilder, AirBuilderWithPublicValues};
 use p3_matrix::Matrix;
 
-use crate::{InteractionAirBuilder, InteractionType};
+use crate::{InteractionBuilder, InteractionType};
 
 pub struct SubAirBuilder<'a, AB> {
     inner: &'a mut AB,
@@ -68,7 +68,7 @@ impl<AB: AirBuilderWithPublicValues> AirBuilderWithPublicValues for SubAirBuilde
     }
 }
 
-impl<AB: InteractionAirBuilder> InteractionAirBuilder for SubAirBuilder<'_, AB> {
+impl<AB: InteractionBuilder> InteractionBuilder for SubAirBuilder<'_, AB> {
     const ONLY_INTERACTION: bool = AB::ONLY_INTERACTION;
 
     #[inline]

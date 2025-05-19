@@ -18,7 +18,7 @@ pub struct Interaction<Expr> {
     pub interaction_type: InteractionType,
 }
 
-pub trait InteractionAirBuilder: AirBuilder {
+pub trait InteractionBuilder: AirBuilder {
     const ONLY_INTERACTION: bool;
 
     fn push_interaction(
