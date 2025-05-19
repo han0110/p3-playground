@@ -1,5 +1,5 @@
 [workspace]
-members = ["air-ext", "fri-ext", "hyperplonk", "ml-pcs", "uni-stark-ext", "whir"]
+members = ["air-ext", "fri-ext", "hyperplonk", "ml-pcs", "poseidon2-util", "uni-stark-ext", "whir"]
 resolver = "2"
 
 [workspace.package]
@@ -55,6 +55,7 @@ p3-air-ext = { path = "./air-ext" }
 p3-fri-ext = { path = "./fri-ext" }
 p3-hyperplonk = { path = "./hyperplonk" }
 p3-ml-pcs = { path = "./ml-pcs" }
+p3-poseidon2-util = { path = "./poseidon2-util" }
 p3-uni-stark-ext = { path = "./uni-stark-ext" }
 p3-whir = { path = "./whir" }
 

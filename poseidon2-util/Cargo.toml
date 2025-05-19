@@ -1,0 +1,21 @@
+[package]
+name = "p3-poseidon2-util"
+
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+p3-baby-bear = { workspace = true }
+p3-field = { workspace = true }
+p3-koala-bear = { workspace = true }
+p3-poseidon2 = { workspace = true }
+p3-poseidon2-air = { workspace = true, optional = true }
+
+[dev-dependencies]
+p3-symmetric = { workspace = true }
+rand = { workspace = true }
+rand-0-8-5 = { version = "0.8.5", package = "rand" }
+zkhash = { git = "https://github.com/HorizenLabs/poseidon2", branch = "main", package = "zkhash" }
+
+[features]
+air = ["dep:p3-poseidon2-air"]
