@@ -92,7 +92,7 @@ fn bench(c: &mut Criterion) {
     let air = &Poseidon2Air(p3_poseidon2_air::Poseidon2Air::new(round_constants.clone()));
     let (_, pk) = keygen([&air]);
 
-    for log_b in 19..22 {
+    for log_b in 13..16 {
         group.bench_with_input(BenchmarkId::from_parameter(log_b), &log_b, |b, log_b| {
             let trace = generate_trace_rows::<
                 _,
