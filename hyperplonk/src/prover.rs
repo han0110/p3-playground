@@ -313,9 +313,11 @@ where
         .map(|trace| {
             // TODO: Find a better way to choose the optimal rounds to skip automatically.
             const SKIP_ROUNDS: usize = 6;
-            (trace.log_b() >= SKIP_ROUNDS + log2_strict_usize(Val::Packing::WIDTH))
-                .then_some(SKIP_ROUNDS)
-                .unwrap_or_default()
+            if trace.log_b() >= SKIP_ROUNDS + log2_strict_usize(Val::Packing::WIDTH) {
+                SKIP_ROUNDS
+            } else {
+                0
+            }
         })
         .collect_vec();
     let regular_rounds = izip!(&traces, cloned(&skip_rounds))
@@ -367,9 +369,11 @@ where
                 .map(|prover| {
                     let (zero_check_round_poly, eval_check_round_poly) = prover.compute_round_poly(
                         z_zc.rslice(regular_rounds),
-                        meta.has_interaction()
-                            .then(|| claim_fs.z.rslice(regular_rounds))
-                            .unwrap_or_default(),
+                        if meta.has_interaction() {
+                            claim_fs.z.rslice(regular_rounds)
+                        } else {
+                            &[]
+                        },
                     );
                     AirUnivariateSkipProof {
                         skip_rounds,

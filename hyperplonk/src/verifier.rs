@@ -414,17 +414,18 @@ where
     let z_skip = {
         let claims = izip!(cloned(&skip_rounds), &proof.regular.evals, theta.powers())
             .map(|(skip_rounds, evals, theta_power)| {
-                (skip_rounds != 0)
-                    .then(|| random_linear_combine(evals, eta) * theta_power)
-                    .unwrap_or_default()
+                if skip_rounds != 0 {
+                    random_linear_combine(evals, eta) * theta_power
+                } else {
+                    Challenge::ZERO
+                }
             })
             .collect_vec();
 
         let claim_at_round = |round| {
-            izip!(cloned(&skip_rounds), cloned(&claims))
-                .flat_map(|(skip_rounds, subclaim)| {
-                    (max_skip_rounds == skip_rounds + round).then_some(subclaim)
-                })
+            izip!(&skip_rounds, &claims)
+                .filter(|(skip_rounds, _)| max_skip_rounds == *skip_rounds + round)
+                .map(|(_, subclaim)| *subclaim)
                 .sum::<Challenge>()
         };
 

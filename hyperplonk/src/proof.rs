@@ -51,7 +51,7 @@ impl<Challenge: Field> Fraction<Challenge> {
             .into_iter()
             .map(|fraction| (fraction.numer, fraction.denom))
             .collect::<(Vec<_>, Vec<_>)>();
-        if denoms.iter().any(|denom| *denom == Challenge::ZERO) {
+        if denoms.contains(&Challenge::ZERO) {
             return None;
         }
         Some(dot_product(

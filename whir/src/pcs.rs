@@ -156,7 +156,7 @@ where
         )>,
         challenger: &mut Challenger,
     ) -> Self::Proof {
-        let proofs = rounds
+        rounds
             .iter()
             .map(|((concat_mats, merkle_tree), queries_and_evals)| {
                 let config = WhirConfig::<Challenge, Val, Hash, Compression, Blake3PoW>::new(
@@ -226,9 +226,7 @@ where
                     proof,
                 }
             })
-            .collect();
-
-        proofs
+            .collect()
     }
 
     fn verify(

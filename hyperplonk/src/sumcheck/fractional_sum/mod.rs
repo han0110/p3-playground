@@ -149,39 +149,35 @@ where
     let width = 2 * fraction_count * FS_ARITY;
     let layers = layers
         .into_iter()
-        .map(|layer| {
-            let layer = match layer {
-                Trace::Packing(layer) if layer.height() > FS_ARITY => {
-                    let width = (1 + Challenge::DIMENSION) * fraction_count * FS_ARITY;
-                    Trace::Packing(RowMajorMatrix::new(layer.values, width))
-                }
-                Trace::Packing(layer) => Trace::Extension(RowMajorMatrix::new(
-                    (0..Val::Packing::WIDTH)
-                        .flat_map(|i| {
-                            layer.values.chunks(1 + Challenge::DIMENSION).flat_map(
-                                move |fraction| {
-                                    let (numer, denom): (_, &Challenge::ExtensionPacking) =
-                                        split_base_and_vector(fraction);
-                                    [
-                                        Challenge::from(numer.as_slice()[i]),
-                                        Challenge::from_basis_coefficients_fn(|j| {
-                                            denom.as_basis_coefficients_slice()[j].as_slice()[i]
-                                        }),
-                                    ]
-                                },
-                            )
-                        })
-                        .collect_vec(),
-                    width,
-                )),
-                Trace::ExtensionPacking(layer) => {
-                    Trace::extension_packing(RowMajorMatrix::new(layer.values, width))
-                }
-                Trace::Extension(layer) => {
-                    Trace::Extension(RowMajorMatrix::new(layer.values, width))
-                }
-            };
-            layer
+        .map(|layer| match layer {
+            Trace::Packing(layer) if layer.height() > FS_ARITY => {
+                let width = (1 + Challenge::DIMENSION) * fraction_count * FS_ARITY;
+                Trace::Packing(RowMajorMatrix::new(layer.values, width))
+            }
+            Trace::Packing(layer) => Trace::Extension(RowMajorMatrix::new(
+                (0..Val::Packing::WIDTH)
+                    .flat_map(|i| {
+                        layer
+                            .values
+                            .chunks(1 + Challenge::DIMENSION)
+                            .flat_map(move |fraction| {
+                                let (numer, denom): (_, &Challenge::ExtensionPacking) =
+                                    split_base_and_vector(fraction);
+                                [
+                                    Challenge::from(numer.as_slice()[i]),
+                                    Challenge::from_basis_coefficients_fn(|j| {
+                                        denom.as_basis_coefficients_slice()[j].as_slice()[i]
+                                    }),
+                                ]
+                            })
+                    })
+                    .collect_vec(),
+                width,
+            )),
+            Trace::ExtensionPacking(layer) => {
+                Trace::extension_packing(RowMajorMatrix::new(layer.values, width))
+            }
+            Trace::Extension(layer) => Trace::Extension(RowMajorMatrix::new(layer.values, width)),
         })
         .collect();
 

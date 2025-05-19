@@ -49,10 +49,11 @@ impl VerifyingKeyPerAir {
             ..
         } = proof;
         let dimension = <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION;
-        let log_up_width = self
-            .has_interaction()
-            .then(|| self.interaction_chunks.len() + 1)
-            .unwrap_or_default();
+        let log_up_width = if self.has_interaction() {
+            self.interaction_chunks.len() + 1
+        } else {
+            0
+        };
         self.has_interaction() == log_up_sum.is_some()
             && opened_values.main_local.len() == self.width
             && opened_values.main_next.len() == self.width

@@ -96,7 +96,7 @@ where
                         let len = 1 << (self.skip_rounds + added_bits);
                         (
                             vec![<_>::ZERO; len],
-                            vec![<_>::ZERO; has_interaction.then_some(len).unwrap_or_default()],
+                            vec![<_>::ZERO; if has_interaction { len } else { 0 }],
                         )
                     },
                     |(mut zero_check_values, mut eval_check_values), (chunk, trace)| {
@@ -129,10 +129,11 @@ where
             join(
                 || values_to_poly(zero_check_values, zero_check_quotient_degree),
                 || {
-                    self.meta
-                        .has_interaction()
-                        .then(|| values_to_poly(eval_check_values, eval_check_degree))
-                        .unwrap_or_default()
+                    if self.meta.has_interaction() {
+                        values_to_poly(eval_check_values, eval_check_degree)
+                    } else {
+                        Vec::new()
+                    }
                 },
             )
         };

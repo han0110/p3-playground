@@ -62,11 +62,11 @@ where
         z_fs: &'a [Challenge],
     ) -> Self {
         let rounds = trace.log_b();
-        let eval_check_eq_helper = EqHelper::new(
-            meta.has_interaction()
-                .then(|| z_fs.rslice(rounds))
-                .unwrap_or_default(),
-        );
+        let eval_check_eq_helper = EqHelper::new(if meta.has_interaction() {
+            z_fs.rslice(rounds)
+        } else {
+            &[]
+        });
         Self {
             air,
             meta,
@@ -412,9 +412,11 @@ where
             zero_check_evals: vec![VarEF::ZERO; meta.regular_sumcheck_degree()],
             eval_check_evals: vec![
                 VarEF::ZERO;
-                meta.has_interaction()
-                    .then(|| meta.regular_sumcheck_degree())
-                    .unwrap_or_default()
+                if meta.has_interaction() {
+                    meta.regular_sumcheck_degree()
+                } else {
+                    0
+                }
             ],
         }
     }
@@ -571,9 +573,11 @@ impl<Challenge: Field> IsFirstRow<Challenge> {
     {
         Challenge::ExtensionPacking::from_basis_coefficients_fn(|i| {
             Val::Packing::from_fn(|j| {
-                (j == 0)
-                    .then(|| self.0.as_basis_coefficients_slice()[i])
-                    .unwrap_or_default()
+                if j == 0 {
+                    self.0.as_basis_coefficients_slice()[i]
+                } else {
+                    Val::ZERO
+                }
             })
         })
     }
@@ -594,9 +598,11 @@ impl<Challenge: Field> IsLastRow<Challenge> {
     {
         Challenge::ExtensionPacking::from_basis_coefficients_fn(|i| {
             Val::Packing::from_fn(|j| {
-                (j == Val::Packing::WIDTH - 1)
-                    .then(|| self.0.as_basis_coefficients_slice()[i])
-                    .unwrap_or_default()
+                if j == Val::Packing::WIDTH - 1 {
+                    self.0.as_basis_coefficients_slice()[i]
+                } else {
+                    Val::ZERO
+                }
             })
         })
     }
