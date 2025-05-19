@@ -6,11 +6,12 @@ use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteri
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
+use p3_ml_pcs::eq_eval;
 use tracing::info_span;
 
 use crate::{
     CompressedRoundPoly, EqHelper, FS_ARITY, PackedExtensionValue, RingArray, RoundPoly, Trace,
-    eq_eval, fractional_sum_at_zero_and_inf, split_base_and_vector,
+    fractional_sum_at_zero_and_inf, split_base_and_vector,
 };
 
 pub(crate) struct FractionalSumRegularProver<'a, Val: Field, Challenge: ExtensionField<Val>> {

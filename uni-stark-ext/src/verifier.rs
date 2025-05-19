@@ -21,7 +21,6 @@ pub fn verify<SC, A>(
     config: &SC,
     vk: &VerifyingKey,
     inputs: Vec<VerifierInput<Val<SC>, A>>,
-    challenger: &mut SC::Challenger,
     proof: &Proof<SC>,
 ) -> Result<(), VerificationError<PcsError<SC>>>
 where
@@ -42,6 +41,8 @@ where
     }
 
     let pcs = config.pcs();
+    let mut challenger = config.initialise_challenger();
+
     let (main_domains, quotient_chunks_domains) = izip!(vk.per_air(), &proof.per_air)
         .map(|(vk, proof)| {
             let main_domain = pcs.natural_domain_for_degree(1 << proof.log_degree);
@@ -147,7 +148,7 @@ where
         ]
         .collect(),
         opening_proof,
-        challenger,
+        &mut challenger,
     )
     .map_err(VerificationError::InvalidOpeningArgument)?;
 

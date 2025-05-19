@@ -9,13 +9,14 @@ use p3_field::{
 use p3_matrix::Matrix;
 use p3_matrix::dense::DenseMatrix;
 use p3_maybe_rayon::prelude::*;
+use p3_ml_pcs::eq_eval;
 use tracing::instrument;
 
 use crate::{
     AirMeta, CompressedRoundPoly, EqHelper, ExtensionPacking, FieldSlice, PackedExtensionValue,
     ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
     ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking, RSlice, RoundPoly,
-    Trace, eq_eval,
+    Trace,
 };
 
 pub(crate) struct AirRegularProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {

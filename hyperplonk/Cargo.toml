@@ -15,6 +15,7 @@ p3-dft.workspace = true
 p3-field.workspace = true
 p3-matrix.workspace = true
 p3-maybe-rayon.workspace = true
+p3-ml-pcs.workspace = true
 p3-util.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"] }
 tracing.workspace = true
@@ -25,6 +26,7 @@ p3-keccak.workspace = true
 p3-koala-bear.workspace = true
 p3-poseidon2-air.workspace = true
 p3-symmetric.workspace = true
+p3-whir = { workspace = true, features = ["parallel"] }
 rand.workspace = true
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }

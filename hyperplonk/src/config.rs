@@ -1,36 +1,29 @@
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, CanSample, FieldChallenger};
-use p3_commit::{Pcs, PolynomialSpace};
-use p3_field::{ExtensionField, Field};
+use p3_field::ExtensionField;
+use p3_ml_pcs::MlPcs;
 
-pub type PcsError<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
-    <SC as StarkGenericConfig>::Challenge,
-    <SC as StarkGenericConfig>::Challenger,
+pub type PcsError<SC> = <<SC as HyperPlonkGenericConfig>::Pcs as MlPcs<
+    <SC as HyperPlonkGenericConfig>::Challenge,
+    <SC as HyperPlonkGenericConfig>::Challenger,
 >>::Error;
 
-pub type Domain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
-    <SC as StarkGenericConfig>::Challenge,
-    <SC as StarkGenericConfig>::Challenger,
->>::Domain;
+pub type Val<C> = <<C as HyperPlonkGenericConfig>::Pcs as MlPcs<
+    <C as HyperPlonkGenericConfig>::Challenge,
+    <C as HyperPlonkGenericConfig>::Challenger,
+>>::Val;
 
-pub type Val<SC> = <Domain<SC> as PolynomialSpace>::Val;
-
-pub type PackedVal<SC> = <Val<SC> as Field>::Packing;
-
-pub type PackedChallenge<SC> =
-    <<SC as StarkGenericConfig>::Challenge as ExtensionField<Val<SC>>>::ExtensionPacking;
-
-pub trait StarkGenericConfig {
+pub trait HyperPlonkGenericConfig {
     /// The PCS used to commit to trace polynomials.
-    type Pcs: Pcs<Self::Challenge, Self::Challenger>;
+    type Pcs: MlPcs<Self::Challenge, Self::Challenger>;
 
     /// The field from which most random challenges are drawn.
     type Challenge: ExtensionField<Val<Self>>;
 
     /// The challenger (Fiat-Shamir) implementation used.
     type Challenger: FieldChallenger<Val<Self>>
-        + CanObserve<<Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::Commitment>
+        + CanObserve<<Self::Pcs as MlPcs<Self::Challenge, Self::Challenger>>::Commitment>
         + CanSample<Self::Challenge>;
 
     /// Get a reference to the PCS used by this proof configuration.
@@ -41,7 +34,7 @@ pub trait StarkGenericConfig {
 }
 
 #[derive(Debug)]
-pub struct StarkConfig<Pcs, Challenge, Challenger> {
+pub struct HyperPlonkConfig<Pcs, Challenge, Challenger> {
     /// The PCS used to commit polynomials and prove opening proofs.
     pcs: Pcs,
     /// An initialised instance of the challenger.
@@ -49,7 +42,7 @@ pub struct StarkConfig<Pcs, Challenge, Challenger> {
     _phantom: PhantomData<Challenge>,
 }
 
-impl<Pcs, Challenge, Challenger> StarkConfig<Pcs, Challenge, Challenger> {
+impl<Pcs, Challenge, Challenger> HyperPlonkConfig<Pcs, Challenge, Challenger> {
     pub const fn new(pcs: Pcs, challenger: Challenger) -> Self {
         Self {
             pcs,
@@ -59,12 +52,13 @@ impl<Pcs, Challenge, Challenger> StarkConfig<Pcs, Challenge, Challenger> {
     }
 }
 
-impl<Pcs, Challenge, Challenger> StarkGenericConfig for StarkConfig<Pcs, Challenge, Challenger>
+impl<Pcs, Challenge, Challenger> HyperPlonkGenericConfig
+    for HyperPlonkConfig<Pcs, Challenge, Challenger>
 where
-    Challenge: ExtensionField<<Pcs::Domain as PolynomialSpace>::Val>,
-    Pcs: p3_commit::Pcs<Challenge, Challenger>,
-    Challenger: FieldChallenger<<Pcs::Domain as PolynomialSpace>::Val>
-        + CanObserve<<Pcs as p3_commit::Pcs<Challenge, Challenger>>::Commitment>
+    Challenge: ExtensionField<Pcs::Val>,
+    Pcs: MlPcs<Challenge, Challenger>,
+    Challenger: FieldChallenger<Pcs::Val>
+        + CanObserve<<Pcs as MlPcs<Challenge, Challenger>>::Commitment>
         + CanSample<Challenge>
         + Clone,
 {

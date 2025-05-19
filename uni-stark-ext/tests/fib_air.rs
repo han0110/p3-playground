@@ -127,23 +127,20 @@ fn test_public_value_impl(n: usize, x: u64, log_final_poly_len: usize) {
     let dft = Dft::default();
     let fri_config = create_test_fri_config(challenge_mmcs, log_final_poly_len);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
-    let config = MyConfig::new(pcs);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
     let (vk, pk) = keygen::<Val, _>(3, &[FibonacciAir {}]);
     let trace = generate_trace_rows::<Val>(0, 1, n);
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
-    let mut challenger = Challenger::new(perm.clone());
     let proof = prove(
         &config,
         &pk,
         vec![ProverInput::new(FibonacciAir {}, pis.clone(), trace)],
-        &mut challenger,
     );
-    let mut challenger = Challenger::new(perm);
     verify(
         &config,
         &vk,
         vec![VerifierInput::new(FibonacciAir {}, pis)],
-        &mut challenger,
         &proof,
     )
     .expect("verification failed");
@@ -171,7 +168,8 @@ fn test_incorrect_public_value() {
     let dft = Dft::default();
     let fri_config = create_test_fri_config(challenge_mmcs, 1);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
-    let config = MyConfig::new(pcs);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
     let (_, pk) = keygen::<Val, _>(3, &[FibonacciAir {}]);
     let trace = generate_trace_rows::<Val>(0, 1, 1 << 3);
     let pis = vec![
@@ -179,11 +177,9 @@ fn test_incorrect_public_value() {
         BabyBear::ONE,
         BabyBear::from_u32(123_123), // incorrect result
     ];
-    let mut challenger = Challenger::new(perm);
     prove(
         &config,
         &pk,
         vec![ProverInput::new(FibonacciAir {}, pis.clone(), trace)],
-        &mut challenger,
     );
 }

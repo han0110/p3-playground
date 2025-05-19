@@ -5,42 +5,45 @@ use core::mem;
 use itertools::{Itertools, chain, cloned, izip, rev};
 use p3_air::Air;
 use p3_air_ext::{ProverInput, VerifierInput};
-use p3_challenger::FieldChallenger;
-use p3_field::{ExtensionField, Field, PackedValue, TwoAdicField, dot_product};
+use p3_challenger::{CanObserve, FieldChallenger};
+use p3_field::{
+    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField, dot_product,
+};
 use p3_matrix::Matrix;
 use p3_matrix::dense::DenseMatrix;
+use p3_ml_pcs::MlPcs;
 use p3_util::log2_strict_usize;
 use tracing::{info_span, instrument};
 
 use crate::{
     AirProof, AirRegularProver, AirUnivariateSkipProof, AirUnivariateSkipProver,
     BatchSumcheckProof, CompressedRoundPoly, EqHelper, EvalClaim, FractionalSumProof,
-    FractionalSumRegularProver, PiopProof, Proof, ProverConstraintFolderOnExtension,
-    ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking,
-    ProverInteractionFolderOnExtension, ProverInteractionFolderOnPacking, ProvingKey, RSlice,
-    Trace, fix_var, fractional_sum_layers, fractional_sum_trace,
+    FractionalSumRegularProver, HyperPlonkGenericConfig, PiopProof, Proof,
+    ProverConstraintFolderOnExtension, ProverConstraintFolderOnExtensionPacking,
+    ProverConstraintFolderOnPacking, ProverInteractionFolderOnExtension,
+    ProverInteractionFolderOnPacking, ProvingKey, RSlice, Trace, Val, fix_var,
+    fractional_sum_layers, fractional_sum_trace, queries_and_evals,
 };
 
 #[instrument(skip_all)]
 #[allow(clippy::multiple_bound_locations)]
 pub fn prove<
-    Val,
-    Challenge,
-    #[cfg(feature = "check-constraints")] A: for<'a> Air<crate::DebugConstraintBuilder<'a, Val>>,
+    C,
+    #[cfg(feature = "check-constraints")] A: for<'a> Air<crate::DebugConstraintBuilder<'a, Val<C>>>,
     #[cfg(not(feature = "check-constraints"))] A,
 >(
+    config: &C,
     pk: &ProvingKey,
-    inputs: Vec<ProverInput<Val, A>>,
-    mut challenger: impl FieldChallenger<Val>,
-) -> Proof<Challenge>
+    inputs: Vec<ProverInput<Val<C>, A>>,
+) -> Proof<C>
 where
-    Val: TwoAdicField + Ord,
-    Challenge: ExtensionField<Val>,
-    A: for<'t> Air<ProverInteractionFolderOnPacking<'t, Val, Challenge>>
-        + for<'t> Air<ProverInteractionFolderOnExtension<'t, Val, Challenge>>
-        + for<'t> Air<ProverConstraintFolderOnPacking<'t, Val, Challenge>>
-        + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val, Challenge>>
-        + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val, Challenge>>,
+    C: HyperPlonkGenericConfig,
+    Val<C>: TwoAdicField + Ord,
+    A: for<'t> Air<ProverInteractionFolderOnPacking<'t, Val<C>, C::Challenge>>
+        + for<'t> Air<ProverInteractionFolderOnExtension<'t, Val<C>, C::Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnPacking<'t, Val<C>, C::Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtension<'t, Val<C>, C::Challenge>>
+        + for<'t> Air<ProverConstraintFolderOnExtensionPacking<'t, Val<C>, C::Challenge>>,
 {
     debug_assert!(!inputs.is_empty());
 
@@ -53,38 +56,38 @@ where
         .map(|mat| log2_strict_usize(mat.height()))
         .collect_vec();
 
-    // TODO: PCS commit and observe.
+    let pcs = config.pcs();
+    let mut challenger = config.initialise_challenger();
 
-    cloned(&log_bs).for_each(|log_b| challenger.observe(Val::from_u8(log_b as u8)));
+    let (commitment, prover_data) =
+        info_span!("commit to main data").in_scope(|| pcs.commit(traces));
+
+    cloned(&log_bs).for_each(|log_b| challenger.observe(Val::<C>::from_u8(log_b as u8)));
+    challenger.observe(commitment.clone());
     inputs
         .iter()
         .for_each(|input| challenger.observe_slice(input.public_values()));
 
-    let (_zs, piop) = {
-        let traces = traces.iter().map(|trace| trace.as_view()).collect();
+    let (zs, piop) = {
+        let traces = (0..pk.metas().len())
+            .map(|i| pcs.get_evaluations(&prover_data, i))
+            .collect();
         prove_piop(pk, &inputs, traces, &mut challenger)
     };
 
-    // TODO: PCS open
+    let pcs = info_span!("open").in_scope(|| {
+        pcs.open(
+            vec![(&prover_data, queries_and_evals(pk.metas(), &piop.air, &zs))],
+            &mut challenger,
+        )
+    });
 
-    // TODO: Remove the following sanity checks.
-    #[cfg(debug_assertions)]
-    izip!(pk.metas(), &traces, &piop.air.univariate_skips, &_zs)
-        .enumerate()
-        .for_each(|(idx, (meta, trace, univariate_skip, z))| {
-            let evals = if univariate_skip.skip_rounds > 0 {
-                &piop.air.univariate_eval_check.evals[idx]
-            } else {
-                &piop.air.regular.evals[idx]
-            };
-            let (local, next) = evals.split_at(meta.width);
-            let mut eq_z = crate::eq_poly(z, Challenge::ONE);
-            assert_eq!(trace.columnwise_dot_product(&eq_z), local);
-            eq_z.rotate_right(1);
-            assert_eq!(trace.columnwise_dot_product(&eq_z), next);
-        });
-
-    Proof { log_bs, piop }
+    Proof {
+        commitment,
+        log_bs,
+        piop,
+        pcs,
+    }
 }
 
 fn prove_piop<Val, Challenge, A>(
@@ -523,6 +526,7 @@ where
                 (z_i, compressed_round_poly)
             })
             .collect::<(Vec<_>, Vec<_>)>();
+
         let evals = univariate_eval_provers
             .into_iter()
             .map(|prover| prover.map(|prover| prover.into_evals()).unwrap_or_default())

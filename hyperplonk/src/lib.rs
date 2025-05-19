@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod config;
 mod folder;
 mod interaction;
 mod keygen;
@@ -11,6 +12,7 @@ mod sumcheck;
 mod util;
 mod verifier;
 
+pub use config::*;
 pub use folder::*;
 pub use interaction::*;
 pub use keygen::*;

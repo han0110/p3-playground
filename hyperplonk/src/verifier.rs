@@ -5,59 +5,73 @@ use core::iter::repeat_n;
 use itertools::{Itertools, chain, cloned, enumerate, izip};
 use p3_air::Air;
 use p3_air_ext::VerifierInput;
-use p3_challenger::FieldChallenger;
-use p3_field::{ExtensionField, TwoAdicField};
+use p3_challenger::{CanObserve, FieldChallenger};
+use p3_field::{ExtensionField, PrimeCharacteristicRing, TwoAdicField};
 use p3_matrix::dense::DenseMatrix;
+use p3_ml_pcs::{MlPcs, MlQuery, eq_eval};
+use tracing::instrument;
 
 use crate::{
-    AirProof, EvalClaim, FS_ARITY, Fraction, FractionalSumProof, PiopProof, Proof, RSlice,
-    VerifierConstraintFolder, VerifyingKey, eq_eval, eval_fractional_sum_accumulator,
-    evaluate_ml_poly, evaluations_on_domain, fix_var, lagrange_evals, random_linear_combine,
-    selectors_at_point,
+    AirMeta, AirProof, EvalClaim, FS_ARITY, Fraction, FractionalSumProof, HyperPlonkGenericConfig,
+    PcsError, PiopProof, Proof, RSlice, Val, VerifierConstraintFolder, VerifyingKey,
+    eval_fractional_sum_accumulator, evaluate_ml_poly, evaluations_on_domain, fix_var,
+    lagrange_evals, random_linear_combine, selectors_at_point,
 };
 
 #[derive(Debug)]
-pub enum Error {
+pub enum VerificationError<PcsError> {
     InvalidProofShape,
     NonZeroFractionalSum,
     UnivariateSkipEvaluationMismatch,
     OodEvaluationMismatch,
+    InvalidOpeningArgument(PcsError),
 }
 
-pub fn verify<Val, Challenge, A>(
+#[instrument(skip_all)]
+pub fn verify<C, A>(
+    config: &C,
     vk: &VerifyingKey,
-    inputs: Vec<VerifierInput<Val, A>>,
-    proof: &Proof<Challenge>,
-    mut challenger: impl FieldChallenger<Val>,
-) -> Result<(), Error>
+    inputs: Vec<VerifierInput<Val<C>, A>>,
+    proof: &Proof<C>,
+) -> Result<(), VerificationError<PcsError<C>>>
 where
-    Val: TwoAdicField + Ord,
-    Challenge: ExtensionField<Val>,
-    A: for<'t> Air<VerifierConstraintFolder<'t, Val, Challenge>>,
+    C: HyperPlonkGenericConfig,
+    Val<C>: TwoAdicField + Ord,
+    A: for<'t> Air<VerifierConstraintFolder<'t, Val<C>, C::Challenge>>,
 {
     debug_assert!(!inputs.is_empty());
 
-    // TODO: Observe commitment.
+    let pcs = config.pcs();
+    let mut challenger = config.initialise_challenger();
 
-    cloned(&proof.log_bs).for_each(|log_b| challenger.observe(Val::from_u8(log_b as u8)));
+    cloned(&proof.log_bs).for_each(|log_b| challenger.observe(Val::<C>::from_u8(log_b as u8)));
+    challenger.observe(proof.commitment.clone());
     inputs
         .iter()
         .for_each(|input| challenger.observe_slice(input.public_values()));
 
-    let _zs = verify_piop(vk, &inputs, &proof.log_bs, &proof.piop, &mut challenger)?;
+    let zs = verify_piop(vk, &inputs, &proof.log_bs, &proof.piop, &mut challenger)?;
 
-    // TODO: PCS verify.
+    pcs.verify(
+        vec![(
+            proof.commitment.clone(),
+            queries_and_evals(vk.metas(), &proof.piop.air, &zs),
+        )],
+        &proof.pcs,
+        &mut challenger,
+    )
+    .map_err(VerificationError::InvalidOpeningArgument)?;
 
     Ok(())
 }
 
-pub fn verify_piop<Val, Challenge, A>(
+pub fn verify_piop<Val, Challenge, A, PcsError>(
     vk: &VerifyingKey,
     inputs: &[VerifierInput<Val, A>],
     log_bs: &[usize],
     proof: &PiopProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
-) -> Result<Vec<Vec<Challenge>>, Error>
+) -> Result<Vec<Vec<Challenge>>, VerificationError<PcsError>>
 where
     Val: TwoAdicField + Ord,
     Challenge: ExtensionField<Val>,
@@ -92,12 +106,12 @@ where
     Ok(zs)
 }
 
-fn verify_fractional_sum<Val, Challenge>(
+fn verify_fractional_sum<Val, Challenge, PcsError>(
     vk: &VerifyingKey,
     log_bs: &[usize],
     proof: &FractionalSumProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
-) -> Result<Vec<EvalClaim<Challenge>>, Error>
+) -> Result<Vec<EvalClaim<Challenge>>, VerificationError<PcsError>>
 where
     Val: TwoAdicField,
     Challenge: ExtensionField<Val>,
@@ -123,11 +137,11 @@ where
                 })
         })
     {
-        return Err(Error::InvalidProofShape);
+        return Err(VerificationError::InvalidProofShape);
     }
 
     if Fraction::sum(proof.sums.iter().flatten()) != Some(Challenge::ZERO) {
-        return Err(Error::NonZeroFractionalSum);
+        return Err(VerificationError::NonZeroFractionalSum);
     }
 
     proof.sums.iter().flatten().for_each(|fraction| {
@@ -169,6 +183,10 @@ where
                         z_i
                     })
                     .collect_vec();
+
+                cloned(layer.evals.iter().flatten())
+                    .for_each(|eval| challenger.observe_algebra_element(eval));
+
                 let eval = izip!(&claims, &layer.evals, beta.powers())
                     .map(|(claim, evals, beta_power)| {
                         if evals.is_empty() {
@@ -180,11 +198,8 @@ where
                     })
                     .sum::<Challenge>();
                 if eval != claim {
-                    return Err(Error::OodEvaluationMismatch);
+                    return Err(VerificationError::OodEvaluationMismatch);
                 }
-
-                cloned(layer.evals.iter().flatten())
-                    .for_each(|eval| challenger.observe_algebra_element(eval));
 
                 z
             };
@@ -207,7 +222,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_air<Val, Challenge, A>(
+fn verify_air<Val, Challenge, A, PcsError>(
     vk: &VerifyingKey,
     inputs: &[VerifierInput<Val, A>],
     log_bs: &[usize],
@@ -216,7 +231,7 @@ fn verify_air<Val, Challenge, A>(
     claims_fs: &[EvalClaim<Challenge>],
     proof: &AirProof<Challenge>,
     mut challenger: impl FieldChallenger<Val>,
-) -> Result<Vec<Vec<Challenge>>, Error>
+) -> Result<Vec<Vec<Challenge>>, VerificationError<PcsError>>
 where
     Val: TwoAdicField + Ord,
     Challenge: ExtensionField<Val>,
@@ -269,7 +284,7 @@ where
         )
         .all(|(meta, skip_rounds, evals)| skip_rounds == 0 || evals.len() == 2 * meta.width)
     {
-        return Err(Error::InvalidProofShape);
+        return Err(VerificationError::InvalidProofShape);
     }
 
     let z_zc = (0..max_regular_rounds)
@@ -309,7 +324,7 @@ where
                     );
                     let z_fs_skipped = &claim_fs.z[..univariate_skip.skip_rounds];
                     if evaluate_ml_poly(&evaluations, z_fs_skipped) != eval_check_claim {
-                        return Err(Error::UnivariateSkipEvaluationMismatch);
+                        return Err(VerificationError::UnivariateSkipEvaluationMismatch);
                     }
                 }
                 univariate_skip.zero_check_round_poly.subclaim(x)
@@ -337,6 +352,9 @@ where
                 z_i
             })
             .collect_vec();
+
+        cloned(proof.regular.evals.iter().flatten())
+            .for_each(|eval| challenger.observe_algebra_element(eval));
 
         let eval = izip!(
             vk.metas(),
@@ -384,14 +402,11 @@ where
         )
         .sum::<Challenge>();
         if eval != claim {
-            return Err(Error::OodEvaluationMismatch);
+            return Err(VerificationError::OodEvaluationMismatch);
         }
 
         z
     };
-
-    cloned(proof.regular.evals.iter().flatten())
-        .for_each(|eval| challenger.observe_algebra_element(eval));
 
     let eta: Challenge = challenger.sample_algebra_element();
     let theta: Challenge = challenger.sample_algebra_element();
@@ -424,6 +439,9 @@ where
             })
             .collect_vec();
 
+        cloned(proof.univariate_eval_check.evals.iter().flatten())
+            .for_each(|eval| challenger.observe_algebra_element(eval));
+
         let eval = izip!(
             cloned(&skip_rounds),
             &proof.univariate_eval_check.evals,
@@ -436,14 +454,11 @@ where
         })
         .sum::<Challenge>();
         if eval != claim {
-            return Err(Error::OodEvaluationMismatch);
+            return Err(VerificationError::OodEvaluationMismatch);
         }
 
         z
     };
-
-    cloned(proof.univariate_eval_check.evals.iter().flatten())
-        .for_each(|eval| challenger.observe_algebra_element(eval));
 
     let zs = izip!(skip_rounds, regular_rounds)
         .map(|(skip_rounds, regular_rounds)| {
@@ -454,4 +469,26 @@ where
         .collect();
 
     Ok(zs)
+}
+
+pub(crate) fn queries_and_evals<Challenge: Clone>(
+    metas: &[AirMeta],
+    proof: &AirProof<Challenge>,
+    zs: &[Vec<Challenge>],
+) -> Vec<Vec<(MlQuery<Challenge>, Vec<Challenge>)>> {
+    izip!(metas, &proof.univariate_skips, zs)
+        .enumerate()
+        .map(|(idx, (meta, univariate_skip, z))| {
+            let evals = if univariate_skip.skip_rounds > 0 {
+                &proof.univariate_eval_check.evals[idx]
+            } else {
+                &proof.regular.evals[idx]
+            };
+            let (local, next) = evals.split_at(meta.width);
+            vec![
+                (MlQuery::Eq(z.to_vec()), local.to_vec()),
+                (MlQuery::EqRotateRight(z.to_vec(), 1), next.to_vec()),
+            ]
+        })
+        .collect()
 }

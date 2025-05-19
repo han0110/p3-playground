@@ -14,6 +14,7 @@ use p3_field::{
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
+use p3_ml_pcs::eq_poly_packed;
 use p3_util::log2_ceil_usize;
 use tracing::instrument;
 
@@ -21,7 +22,7 @@ use crate::{
     AirMeta, AirRegularProver, EqHelper, EvalProver, FieldSlice, PackedExtensionValue,
     ProverConstraintFolderGeneric, ProverConstraintFolderOnExtension,
     ProverConstraintFolderOnExtensionPacking, ProverConstraintFolderOnPacking, RoundPoly, Trace,
-    eq_poly_packed, vec_pair_add,
+    vec_pair_add,
 };
 
 pub(crate) struct AirUnivariateSkipProver<'a, Val: Field, Challenge: ExtensionField<Val>, A> {

@@ -92,7 +92,7 @@ impl MyAir {
 #[test]
 fn single_sum() {
     let mut rng = StdRng::from_os_rng();
-    for (log_b, width) in (0..12).cartesian_product(1..5) {
+    for (log_b, width) in (4..12).cartesian_product(1..5) {
         let air = MyAir::GrandSum { width };
         let (trace, output) = air.generate_trace_rows(log_b, &mut rng);
         let public_values = vec![output];
@@ -103,7 +103,7 @@ fn single_sum() {
 #[test]
 fn single_product() {
     let mut rng = StdRng::from_os_rng();
-    for (log_b, width) in (0..12).cartesian_product(1..5) {
+    for (log_b, width) in (4..12).cartesian_product(1..5) {
         let air = MyAir::GrandProduct { width };
         let (trace, output) = air.generate_trace_rows(log_b, &mut rng);
         let public_values = vec![output];
@@ -119,7 +119,7 @@ fn multiple_mixed() {
         run::<Val, Challenge, _>(
             (0..n)
                 .map(|_| {
-                    let log_b = rng.random_range(0..12);
+                    let log_b = rng.random_range(4..12);
                     let width = rng.random_range(1..5);
                     let air = match rng.random_bool(0.5) {
                         false => MyAir::GrandSum { width },

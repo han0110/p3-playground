@@ -12,11 +12,12 @@ use p3_field::{
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
+use p3_ml_pcs::eq_poly_packed;
 use p3_util::log2_strict_usize;
 use tracing::{info_span, instrument};
 
 use crate::{
-    CompressedRoundPoly, FieldSlice, PackedExtensionValue, RoundPoly, eq_poly_packed, fix_var,
+    CompressedRoundPoly, FieldSlice, PackedExtensionValue, RoundPoly, fix_var,
     fix_var_extension_packing, vec_add,
 };
 

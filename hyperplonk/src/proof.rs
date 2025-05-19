@@ -4,16 +4,27 @@ use core::ops::{Add, Mul};
 
 use itertools::chain;
 use p3_field::{Field, batch_multiplicative_inverse, dot_product};
+use p3_ml_pcs::MlPcs;
 use serde::{Deserialize, Serialize};
 
-use crate::{FieldSlice, evaluate_uv_poly};
+use crate::{FieldSlice, HyperPlonkGenericConfig, evaluate_uv_poly};
+
+type Com<C> = <<C as HyperPlonkGenericConfig>::Pcs as MlPcs<
+    <C as HyperPlonkGenericConfig>::Challenge,
+    <C as HyperPlonkGenericConfig>::Challenger,
+>>::Commitment;
+type PcsProof<C> = <<C as HyperPlonkGenericConfig>::Pcs as MlPcs<
+    <C as HyperPlonkGenericConfig>::Challenge,
+    <C as HyperPlonkGenericConfig>::Challenger,
+>>::Proof;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Proof<Challenge> {
+#[serde(bound = "")]
+pub struct Proof<C: HyperPlonkGenericConfig> {
     pub log_bs: Vec<usize>,
-    // pub commitments: Commitments,
-    pub piop: PiopProof<Challenge>,
-    // pub pcs: PcsProof<Challenge>,
+    pub commitment: Com<C>,
+    pub piop: PiopProof<C::Challenge>,
+    pub pcs: PcsProof<C>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

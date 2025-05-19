@@ -4,14 +4,13 @@ use core::array::from_fn;
 use core::iter::Sum;
 use core::ops::{Add, Mul};
 
-use itertools::{cloned, enumerate, izip, rev, zip_eq};
+use itertools::{cloned, izip, rev, zip_eq};
 use p3_field::{
     Algebra, ExtensionField, Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing,
 };
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_maybe_rayon::prelude::*;
-use p3_util::log2_strict_usize;
 use tracing::instrument;
 
 pub(crate) fn random_linear_combine<'a, EF: 'a + Copy + PrimeCharacteristicRing>(
@@ -28,9 +27,13 @@ pub(crate) fn evaluate_uv_poly<'a, F: Field, EF: ExtensionField<F>>(
     rev(cloned(coeffs)).fold(EF::ZERO, |acc, coeff| acc * x + coeff)
 }
 
-pub fn evaluate_ml_poly<F: Field, EF: ExtensionField<F>>(evals: &[F], z: &[EF]) -> EF {
+pub fn evaluate_ml_poly<Var, VarEF>(evals: &[Var], z: &[VarEF]) -> VarEF
+where
+    Var: Copy + Send + Sync + PrimeCharacteristicRing,
+    VarEF: Copy + Send + Sync + Algebra<Var>,
+{
     match z {
-        [] => EF::from(evals[0]),
+        [] => VarEF::from(evals[0]),
         [z_0] => *z_0 * (evals[1] - evals[0]) + evals[0],
         &[ref z @ .., z_i] => {
             let (lo, hi) = evals.split_at(evals.len() / 2);
@@ -38,47 +41,6 @@ pub fn evaluate_ml_poly<F: Field, EF: ExtensionField<F>>(evals: &[F], z: &[EF]) 
             z_i * (hi - lo) + lo
         }
     }
-}
-
-pub(crate) fn eq_poly_packed<F: Field, EF: ExtensionField<F>>(
-    z: &[EF],
-) -> Vec<EF::ExtensionPacking> {
-    let log_packing_width = log2_strict_usize(F::Packing::WIDTH);
-    let (z_lo, z_hi) = z.split_at(z.len().saturating_sub(log_packing_width));
-    let mut eq_z_hi = eq_poly(z_hi, EF::ONE);
-    eq_z_hi.resize(F::Packing::WIDTH, EF::ZERO);
-    eq_poly(z_lo, EF::ExtensionPacking::from_ext_slice(&eq_z_hi))
-}
-
-#[instrument(level = "debug", skip_all, fields(log_b = %z.len()))]
-pub fn eq_poly<EF, VarEF>(z: &[EF], scalar: VarEF) -> Vec<VarEF>
-where
-    EF: Copy + Send + Sync + PrimeCharacteristicRing,
-    VarEF: Copy + Send + Sync + Algebra<EF>,
-{
-    let mut evals = vec![VarEF::ZERO; 1 << z.len()];
-    evals[0] = scalar;
-    enumerate(z).for_each(|(i, z_i)| eq_expand(&mut evals, *z_i, i));
-    evals
-}
-
-pub(crate) fn eq_expand<EF, VarEF>(evals: &mut [VarEF], x_i: EF, i: usize)
-where
-    EF: Copy + Send + Sync + PrimeCharacteristicRing,
-    VarEF: Copy + Send + Sync + Algebra<EF>,
-{
-    let (lo, hi) = evals[..2 << i].split_at_mut(1 << i);
-    lo.par_iter_mut().zip(hi).for_each(|(lo, hi)| {
-        *hi = *lo * x_i;
-        *lo -= *hi;
-    });
-}
-
-pub fn eq_eval<'a, EF: Field>(
-    x: impl IntoIterator<Item = &'a EF>,
-    y: impl IntoIterator<Item = &'a EF>,
-) -> EF {
-    EF::product(zip_eq(x, y).map(|(&x, &y)| (x * y).double() + EF::ONE - x - y))
 }
 
 #[instrument(level = "debug", skip_all, fields(log_b = %mat.height().ilog2()))]

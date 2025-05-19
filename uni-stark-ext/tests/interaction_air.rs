@@ -127,14 +127,14 @@ fn do_test(sending_trace: RowMajorMatrix<Val>, receiving_trace: RowMajorMatrix<V
     let dft = Dft::default();
     let fri_config = create_test_fri_config(challenge_mmcs, 0);
     let pcs = Pcs::new(dft, val_mmcs, fri_config);
-    let config = MyConfig::new(pcs);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
 
     let (vk, pk) = keygen::<Val, _>(
         3,
         &[MyAir::Sending(SendingAir), MyAir::Receiving(ReceivingAir)],
     );
 
-    let mut challenger = Challenger::new(perm.clone());
     let proof = prove(
         &config,
         &pk,
@@ -142,9 +142,7 @@ fn do_test(sending_trace: RowMajorMatrix<Val>, receiving_trace: RowMajorMatrix<V
             ProverInput::new(MyAir::Sending(SendingAir), Vec::new(), sending_trace),
             ProverInput::new(MyAir::Receiving(ReceivingAir), Vec::new(), receiving_trace),
         ],
-        &mut challenger,
     );
-    let mut challenger = Challenger::new(perm);
     verify(
         &config,
         &vk,
@@ -152,7 +150,6 @@ fn do_test(sending_trace: RowMajorMatrix<Val>, receiving_trace: RowMajorMatrix<V
             VerifierInput::new(MyAir::Sending(SendingAir), Vec::new()),
             VerifierInput::new(MyAir::Receiving(ReceivingAir), Vec::new()),
         ],
-        &mut challenger,
         &proof,
     )
     .expect("verification failed");

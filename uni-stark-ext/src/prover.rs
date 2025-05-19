@@ -32,7 +32,6 @@ pub fn prove<
     config: &SC,
     pk: &ProvingKey,
     inputs: Vec<ProverInput<Val<SC>, A>>,
-    challenger: &mut SC::Challenger,
 ) -> Proof<SC>
 where
     SC: StarkGenericConfig,
@@ -51,6 +50,8 @@ where
     let has_any_interaction = pk.has_any_interaction();
 
     let pcs = config.pcs();
+    let mut challenger = config.initialise_challenger();
+
     let (main_domains, quotient_domains) = izip!(pk.per_air(), &log_degrees)
         .map(|(pk, log_degree)| {
             let main_domain = pcs.natural_domain_for_degree(1 << log_degree);
@@ -250,7 +251,7 @@ where
                 )),
             ]
             .collect(),
-            challenger,
+            &mut challenger,
         )
     });
     let mut opened_values = opened_values.into_iter();
