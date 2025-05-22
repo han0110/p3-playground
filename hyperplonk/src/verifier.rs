@@ -130,7 +130,7 @@ where
                 && layer
                     .compressed_round_polys
                     .iter()
-                    .all(|compressed_round_poly| compressed_round_poly.0.len() <= 1 + FS_ARITY)
+                    .all(|compressed_round_poly| compressed_round_poly.0.len() == 1 + FS_ARITY)
                 && layer.evals.len() == vk.metas().len()
                 && izip!(vk.metas(), cloned(log_bs), &layer.evals).all(|(meta, log_b, evals)| {
                     rounds >= log_b || evals.len() == 2 * meta.interaction_count * FS_ARITY
@@ -252,11 +252,16 @@ where
         || !izip!(vk.metas(), cloned(log_bs), cloned(&proof.univariate_skips)).all(
             |(meta, log_b, univariate_skip)| {
                 univariate_skip.skip_rounds <= log_b
-                    && univariate_skip.zero_check_round_poly.0.len()
-                        <= meta.zero_check_uv_degree.saturating_sub(1)
-                            << univariate_skip.skip_rounds
-                    && univariate_skip.eval_check_round_poly.0.len()
-                        <= meta.eval_check_uv_degree << univariate_skip.skip_rounds
+                    && (if univariate_skip.skip_rounds == 0 {
+                        univariate_skip.zero_check_round_poly.0.is_empty()
+                            && univariate_skip.eval_check_round_poly.0.is_empty()
+                    } else {
+                        univariate_skip.zero_check_round_poly.0.len()
+                            == meta.zero_check_uv_degree.saturating_sub(1)
+                                << univariate_skip.skip_rounds
+                            && univariate_skip.eval_check_round_poly.0.len()
+                                == meta.eval_check_uv_degree << univariate_skip.skip_rounds
+                    })
             },
         )
         || proof.regular.compressed_round_polys.len() != max_regular_rounds
@@ -265,7 +270,7 @@ where
             .compressed_round_polys
             .iter()
             .all(|compressed_round_poly| {
-                compressed_round_poly.0.len() <= vk.max_regular_sumcheck_degree() + 1
+                compressed_round_poly.0.len() == vk.max_regular_sumcheck_degree() + 1
             })
         || proof.regular.evals.len() != vk.metas().len()
         || !izip!(vk.metas(), &proof.regular.evals)
@@ -275,7 +280,7 @@ where
             .univariate_eval_check
             .compressed_round_polys
             .iter()
-            .all(|compressed_round_poly| compressed_round_poly.0.len() <= 2)
+            .all(|compressed_round_poly| compressed_round_poly.0.len() == 2)
         || proof.univariate_eval_check.evals.len() != vk.metas().len()
         || !izip!(
             vk.metas(),

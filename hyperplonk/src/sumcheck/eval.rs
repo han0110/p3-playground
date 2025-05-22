@@ -28,7 +28,7 @@ impl<Challenge: Field> EvalProver<'_, Challenge> {
     )]
     pub(crate) fn compute_round_poly(&mut self, log_b: usize) -> CompressedRoundPoly<Challenge> {
         if log_b + 1 != log2_strict_usize(self.trace.height()) {
-            return CompressedRoundPoly::default();
+            return CompressedRoundPoly(vec![Challenge::ZERO; 2]);
         }
 
         let RingArray([coeff_0, coeff_2]) = self

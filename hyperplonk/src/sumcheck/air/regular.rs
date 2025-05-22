@@ -91,7 +91,8 @@ where
 
     pub(crate) fn compute_round_poly(&mut self, log_b: usize) -> CompressedRoundPoly<Challenge> {
         if log_b + 1 != self.trace.log_b() {
-            return CompressedRoundPoly::default();
+            let degree = self.meta.regular_sumcheck_degree();
+            return CompressedRoundPoly(vec![Challenge::ZERO; degree + 1]);
         }
 
         let (zero_check_round_poly, eval_check_round_poly) = match &self.trace {
