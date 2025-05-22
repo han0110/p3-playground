@@ -58,6 +58,7 @@ mod test {
 
     use p3_baby_bear::BabyBear;
     use p3_field::integers::QuotientMap;
+    use p3_poseidon2::ExternalLayerConstants;
     use p3_symmetric::Permutation;
     use rand_0_8_5::SeedableRng;
     use rand_0_8_5::rngs::StdRng;
@@ -69,13 +70,12 @@ mod test {
     };
 
     use crate::instantiation::horizon::MatDiagMinusOne;
-    use crate::instantiation::horizon::baby_bear::{
-        Poseidon2BabyBearHorizon, poseidon2_baby_bear_horizon_t16, poseidon2_baby_bear_horizon_t24,
-    };
+    use crate::instantiation::horizon::baby_bear::Poseidon2BabyBearHorizon;
+    use crate::instantiation::horizon::baby_bear::constant::{RC16, RC24};
 
     #[test]
     fn consistency() {
-        fn check<const WIDTH: usize>(poseidon2: &Poseidon2BabyBearHorizon<WIDTH>)
+        fn check<const WIDTH: usize>(poseidon2: Poseidon2BabyBearHorizon<WIDTH>)
         where
             BabyBear: MatDiagMinusOne<WIDTH>,
         {
@@ -94,8 +94,20 @@ mod test {
             }
         }
 
-        check(poseidon2_baby_bear_horizon_t16());
-        check(poseidon2_baby_bear_horizon_t24());
+        check(p3_poseidon2::Poseidon2::new(
+            ExternalLayerConstants::new(
+                RC16.beginning_full_round_constants.to_vec(),
+                RC16.ending_full_round_constants.to_vec(),
+            ),
+            RC16.partial_round_constants.to_vec(),
+        ));
+        check(p3_poseidon2::Poseidon2::new(
+            ExternalLayerConstants::new(
+                RC24.beginning_full_round_constants.to_vec(),
+                RC24.ending_full_round_constants.to_vec(),
+            ),
+            RC24.partial_round_constants.to_vec(),
+        ));
     }
 
     fn horizon_to_p3<F: QuotientMap<u64>>(value: FpBabyBear) -> F {
