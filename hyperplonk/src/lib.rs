@@ -18,7 +18,13 @@ pub use interaction::*;
 pub use keygen::*;
 pub use p3_air_ext::*;
 pub use proof::*;
-pub use prover::*;
+pub use prover::prove;
 pub(crate) use sumcheck::*;
 pub use util::*;
 pub use verifier::*;
+
+#[cfg(feature = "bench")]
+pub use crate::{
+    prover::{prove_air, prove_fractional_sum},
+    sumcheck::{EvalClaim, Trace},
+};

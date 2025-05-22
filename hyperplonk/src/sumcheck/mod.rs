@@ -106,9 +106,9 @@ fn vander_mat_inv<F: Field>(points: impl IntoIterator<Item = F>) -> RowMajorMatr
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct EvalClaim<Challenge> {
-    pub(crate) z: Vec<Challenge>,
-    pub(crate) evals: Vec<Challenge>,
+pub struct EvalClaim<Challenge> {
+    pub z: Vec<Challenge>,
+    pub evals: Vec<Challenge>,
 }
 
 pub(crate) struct EqHelper<'a, Val: Field, Challenge: ExtensionField<Val>> {
@@ -185,7 +185,7 @@ impl<'a, Val: Field, Challenge: ExtensionField<Val>> EqHelper<'a, Val, Challenge
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Trace<Val: Field, Challenge: ExtensionField<Val>> {
+pub enum Trace<Val: Field, Challenge: ExtensionField<Val>> {
     Packing(RowMajorMatrix<Val::Packing>),
     ExtensionPacking(RowMajorMatrix<Challenge::ExtensionPacking>),
     Extension(RowMajorMatrix<Challenge>),
@@ -198,7 +198,7 @@ impl<Val: Field, Challenge: ExtensionField<Val>> Default for Trace<Val, Challeng
 }
 
 impl<Val: Field, Challenge: ExtensionField<Val>> Trace<Val, Challenge> {
-    pub(crate) fn new(trace: impl Matrix<Val>) -> Self {
+    pub fn new(trace: impl Matrix<Val>) -> Self {
         const WINDOW: usize = 2;
         let width = trace.width();
         let height = trace.height();

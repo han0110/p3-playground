@@ -38,8 +38,16 @@ tikv-jemallocator = "0.6"
 check-constraints = ["p3-air-ext/check-constraints"]
 parallel = ["p3-maybe-rayon/parallel"]
 
+bench = ["parallel"]
+
 [[bench]]
-name = "koala_bear_poseidon2"
+name = "air"
 
 harness = false
-required-features = ["parallel"]
+required-features = ["bench"]
+
+[[bench]]
+name = "fractional_sum"
+
+harness = false
+required-features = ["bench"]

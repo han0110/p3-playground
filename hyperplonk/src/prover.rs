@@ -150,7 +150,7 @@ where
 }
 
 #[instrument(skip_all)]
-fn prove_fractional_sum<Val, Challenge, A>(
+pub fn prove_fractional_sum<Val, Challenge, A>(
     pk: &ProvingKey,
     inputs: &[VerifierInput<Val, A>],
     traces: &[Trace<Val, Challenge>],
@@ -292,7 +292,7 @@ where
 }
 
 #[instrument(skip_all)]
-fn prove_air<Val, Challenge, A>(
+pub fn prove_air<Val, Challenge, A>(
     pk: &ProvingKey,
     inputs: &[VerifierInput<Val, A>],
     mut traces: Vec<Trace<Val, Challenge>>,

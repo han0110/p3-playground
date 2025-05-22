@@ -65,7 +65,7 @@ where
     Ok(())
 }
 
-pub fn verify_piop<Val, Challenge, A, PcsError>(
+fn verify_piop<Val, Challenge, A, PcsError>(
     vk: &VerifyingKey,
     inputs: &[VerifierInput<Val, A>],
     log_bs: &[usize],

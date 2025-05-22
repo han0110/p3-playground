@@ -27,7 +27,7 @@ pub(crate) fn evaluate_uv_poly<'a, F: Field, EF: ExtensionField<F>>(
     rev(cloned(coeffs)).fold(EF::ZERO, |acc, coeff| acc * x + coeff)
 }
 
-pub fn evaluate_ml_poly<Var, VarEF>(evals: &[Var], z: &[VarEF]) -> VarEF
+pub(crate) fn evaluate_ml_poly<Var, VarEF>(evals: &[Var], z: &[VarEF]) -> VarEF
 where
     Var: Copy + Send + Sync + PrimeCharacteristicRing,
     VarEF: Copy + Send + Sync + Algebra<Var>,
