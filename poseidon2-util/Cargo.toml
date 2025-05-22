@@ -19,3 +19,4 @@ zkhash = { git = "https://github.com/HorizenLabs/poseidon2", branch = "main", pa
 
 [features]
 air = ["dep:p3-poseidon2-air"]
+std = []

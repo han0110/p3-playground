@@ -1,5 +1,7 @@
-use crate::{RoundConstants, instantiation::horizon::MatDiagMinusOne};
 use p3_baby_bear::BabyBear;
+
+use crate::RoundConstants;
+use crate::instantiation::horizon::MatDiagMinusOne;
 
 pub const SBOX_DEGREE: u64 = 7;
 

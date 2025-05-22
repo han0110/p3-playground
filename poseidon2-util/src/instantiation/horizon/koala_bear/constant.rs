@@ -1,5 +1,7 @@
-use crate::{RoundConstants, instantiation::horizon::MatDiagMinusOne};
 use p3_koala_bear::KoalaBear;
+
+use crate::RoundConstants;
+use crate::instantiation::horizon::MatDiagMinusOne;
 
 pub const SBOX_DEGREE: u64 = 3;
 

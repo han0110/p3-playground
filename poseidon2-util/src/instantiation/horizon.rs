@@ -1,4 +1,7 @@
-use core::{iter::zip, marker::PhantomData};
+use alloc::vec::Vec;
+use core::iter::zip;
+use core::marker::PhantomData;
+
 use p3_field::{Algebra, Field, InjectiveMonomial};
 use p3_poseidon2::{
     ExternalLayer, ExternalLayerConstants, ExternalLayerConstructor, GenericPoseidon2LinearLayers,

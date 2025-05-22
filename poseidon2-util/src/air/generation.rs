@@ -1,11 +1,13 @@
 //! Copied from https://github.com/Plonky3/Plonky3/blob/main/poseidon2-air/src/generation.rs
 //! to expose `generate_trace_rows_for_perm`.
 
-use crate::air::RoundConstants;
 use core::mem::MaybeUninit;
+
 use p3_field::PrimeField;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{FullRound, PartialRound, Poseidon2Cols, SBox};
+
+use crate::air::RoundConstants;
 
 pub fn generate_trace_rows_for_perm<
     F: PrimeField,

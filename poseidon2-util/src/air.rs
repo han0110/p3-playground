@@ -1,5 +1,6 @@
-use crate::RoundConstants;
 use p3_field::Field;
+
+use crate::RoundConstants;
 
 mod generation;
 

@@ -1,12 +1,12 @@
-use crate::instantiation::horizon::{
-    Poseidon2ExternalLayerHorizon, Poseidon2InternalLayerHorizon,
-    baby_bear::constant::{RC16, RC24, SBOX_DEGREE},
-};
 use p3_baby_bear::BabyBear;
-use p3_poseidon2::{ExternalLayerConstants, Poseidon2};
-use std::sync::LazyLock;
+use p3_poseidon2::Poseidon2;
+
+use crate::instantiation::horizon::baby_bear::constant::SBOX_DEGREE;
+use crate::instantiation::horizon::{Poseidon2ExternalLayerHorizon, Poseidon2InternalLayerHorizon};
 
 pub mod constant;
+#[cfg(feature = "std")]
+pub use instance::*;
 
 pub type Poseidon2BabyBearHorizon<const WIDTH: usize> = Poseidon2<
     BabyBear,
@@ -16,55 +16,61 @@ pub type Poseidon2BabyBearHorizon<const WIDTH: usize> = Poseidon2<
     SBOX_DEGREE,
 >;
 
-pub fn poseidon2_baby_bear_horizon_t16() -> &'static Poseidon2BabyBearHorizon<16> {
-    static INSTANCE: LazyLock<Poseidon2BabyBearHorizon<16>> = LazyLock::new(|| {
-        Poseidon2::new(
-            ExternalLayerConstants::new(
-                RC16.beginning_full_round_constants.to_vec(),
-                RC16.ending_full_round_constants.to_vec(),
-            ),
-            RC16.partial_round_constants.to_vec(),
-        )
-    });
-    &INSTANCE
-}
+#[cfg(feature = "std")]
+mod instance {
+    use std::sync::LazyLock;
 
-pub fn poseidon2_baby_bear_horizon_t24() -> &'static Poseidon2BabyBearHorizon<24> {
-    static INSTANCE: LazyLock<Poseidon2BabyBearHorizon<24>> = LazyLock::new(|| {
-        Poseidon2::new(
-            ExternalLayerConstants::new(
-                RC24.beginning_full_round_constants.to_vec(),
-                RC24.ending_full_round_constants.to_vec(),
-            ),
-            RC24.partial_round_constants.to_vec(),
-        )
-    });
-    &INSTANCE
+    use p3_poseidon2::{ExternalLayerConstants, Poseidon2};
+
+    use crate::instantiation::horizon::baby_bear::Poseidon2BabyBearHorizon;
+    use crate::instantiation::horizon::baby_bear::constant::{RC16, RC24};
+
+    pub fn poseidon2_baby_bear_horizon_t16() -> &'static Poseidon2BabyBearHorizon<16> {
+        static INSTANCE: LazyLock<Poseidon2BabyBearHorizon<16>> = LazyLock::new(|| {
+            Poseidon2::new(
+                ExternalLayerConstants::new(
+                    RC16.beginning_full_round_constants.to_vec(),
+                    RC16.ending_full_round_constants.to_vec(),
+                ),
+                RC16.partial_round_constants.to_vec(),
+            )
+        });
+        &INSTANCE
+    }
+
+    pub fn poseidon2_baby_bear_horizon_t24() -> &'static Poseidon2BabyBearHorizon<24> {
+        static INSTANCE: LazyLock<Poseidon2BabyBearHorizon<24>> = LazyLock::new(|| {
+            Poseidon2::new(
+                ExternalLayerConstants::new(
+                    RC24.beginning_full_round_constants.to_vec(),
+                    RC24.ending_full_round_constants.to_vec(),
+                ),
+                RC24.partial_round_constants.to_vec(),
+            )
+        });
+        &INSTANCE
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::instantiation::horizon::{
-        MatDiagMinusOne,
-        baby_bear::{
-            Poseidon2BabyBearHorizon, poseidon2_baby_bear_horizon_t16,
-            poseidon2_baby_bear_horizon_t24,
-        },
-    };
     use core::array::from_fn;
+
     use p3_baby_bear::BabyBear;
     use p3_field::integers::QuotientMap;
     use p3_symmetric::Permutation;
-    use rand_0_8_5::{SeedableRng, rngs::StdRng};
-    use zkhash::{
-        ark_ff::{PrimeField, UniformRand},
-        fields::babybear::FpBabyBear,
-        poseidon2::{
-            poseidon2::Poseidon2,
-            poseidon2_instance_babybear::{
-                POSEIDON2_BABYBEAR_16_PARAMS, POSEIDON2_BABYBEAR_24_PARAMS,
-            },
-        },
+    use rand_0_8_5::SeedableRng;
+    use rand_0_8_5::rngs::StdRng;
+    use zkhash::ark_ff::{PrimeField, UniformRand};
+    use zkhash::fields::babybear::FpBabyBear;
+    use zkhash::poseidon2::poseidon2::Poseidon2;
+    use zkhash::poseidon2::poseidon2_instance_babybear::{
+        POSEIDON2_BABYBEAR_16_PARAMS, POSEIDON2_BABYBEAR_24_PARAMS,
+    };
+
+    use crate::instantiation::horizon::MatDiagMinusOne;
+    use crate::instantiation::horizon::baby_bear::{
+        Poseidon2BabyBearHorizon, poseidon2_baby_bear_horizon_t16, poseidon2_baby_bear_horizon_t24,
     };
 
     #[test]
