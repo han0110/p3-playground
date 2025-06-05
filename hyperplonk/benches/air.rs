@@ -10,7 +10,8 @@ use p3_poseidon2_air::{RoundConstants, generate_trace_rows, num_cols};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-#[cfg_attr(target_family = "unix", global_allocator)]
+#[cfg(target_family = "unix")]
+#[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 type Val = KoalaBear;

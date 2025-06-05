@@ -16,7 +16,8 @@ use tracing_forest::ForestLayer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry};
 
-#[cfg_attr(target_family = "unix", global_allocator)]
+#[cfg(target_family = "unix")]
+#[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 type Val = KoalaBear;
