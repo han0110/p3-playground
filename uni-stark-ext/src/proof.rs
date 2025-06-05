@@ -17,31 +17,31 @@ type PcsProof<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Proof<SC: StarkGenericConfig> {
-    pub(crate) commitments: Commitments<Com<SC>>,
-    pub(crate) per_air: Vec<ProofPerAir<SC>>,
-    pub(crate) opening_proof: PcsProof<SC>,
+    pub commitments: Commitments<Com<SC>>,
+    pub per_air: Vec<ProofPerAir<SC>>,
+    pub opening_proof: PcsProof<SC>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct ProofPerAir<SC: StarkGenericConfig> {
-    pub(crate) log_degree: usize,
-    pub(crate) log_up_sum: Option<SC::Challenge>,
-    pub(crate) opened_values: OpenedValues<SC::Challenge>,
+    pub log_degree: usize,
+    pub log_up_sum: Option<SC::Challenge>,
+    pub opened_values: OpenedValues<SC::Challenge>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Commitments<Com> {
-    pub(crate) main: Com,
-    pub(crate) log_up_chunks: Option<Com>,
-    pub(crate) quotient_chunks: Com,
+    pub main: Com,
+    pub log_up_chunks: Option<Com>,
+    pub quotient_chunks: Com,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenedValues<Challenge> {
-    pub(crate) main_local: Vec<Challenge>,
-    pub(crate) main_next: Vec<Challenge>,
-    pub(crate) log_up_local: Vec<Challenge>,
-    pub(crate) log_up_next: Vec<Challenge>,
-    pub(crate) quotient_chunks: Vec<Vec<Challenge>>,
+    pub main_local: Vec<Challenge>,
+    pub main_next: Vec<Challenge>,
+    pub log_up_local: Vec<Challenge>,
+    pub log_up_next: Vec<Challenge>,
+    pub quotient_chunks: Vec<Vec<Challenge>>,
 }
