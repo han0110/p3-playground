@@ -1,5 +1,13 @@
 [workspace]
-members = ["air-ext", "fri-ext", "hyperplonk", "ml-pcs", "poseidon2-util", "uni-stark-ext", "whir"]
+members = [
+    "air-ext",
+    "fri-ext",
+    "hyperplonk",
+    "ml-pcs",
+    "poseidon2-util",
+    "uni-stark-ext",
+    "whir",
+]
 resolver = "2"
 
 [workspace.package]
