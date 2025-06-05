@@ -244,6 +244,7 @@ mod koala_bear_whir_pcs {
             merkle_compress: compress,
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: log_blowup,
+            rs_domain_initial_reduction_factor: 3,
         };
         (
             MyPcs::new(dft, whir_params),

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use itertools::{Itertools, izip};
 use p3_challenger::{CanObserve, FieldChallenger, GrindingChallenger};
-use p3_commit::Mmcs;
+use p3_commit::{BatchOpeningRef, Mmcs};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::{Dimensions, Matrix};
@@ -180,8 +180,7 @@ where
                 comm,
                 &dims,
                 index_row,
-                &opening.opened_rows,
-                &opening.opening_proof,
+                BatchOpeningRef::new(&opening.opened_rows, &opening.opening_proof),
             )
             .map_err(FriError::CommitPhaseMmcsError)?;
 

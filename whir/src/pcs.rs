@@ -12,7 +12,8 @@ use p3_challenger::FieldChallenger;
 use p3_commit::Mmcs;
 use p3_dft::TwoAdicSubgroupDft;
 use p3_field::{ExtensionField, Field, PrimeField64, TwoAdicField, dot_product};
-use p3_matrix::dense::{DenseMatrix, RowMajorMatrix, RowMajorMatrixView};
+use p3_keccak::KeccakF;
+use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_matrix::horizontally_truncated::HorizontallyTruncated;
 use p3_matrix::{Dimensions, Matrix};
 use p3_maybe_rayon::prelude::*;
@@ -25,17 +26,19 @@ use serde::{Deserialize, Serialize};
 use tracing::info_span;
 use whir_p3::fiat_shamir::domain_separator::DomainSeparator;
 use whir_p3::fiat_shamir::errors::ProofError;
+use whir_p3::fiat_shamir::keccak::{KECCAK_WIDTH_BYTES, Keccak};
 use whir_p3::fiat_shamir::pow::blake3::Blake3PoW;
 use whir_p3::parameters::{MultivariateParameters, ProtocolParameters};
 use whir_p3::poly::coeffs::CoefficientList;
 use whir_p3::poly::evals::EvaluationsList;
 use whir_p3::poly::multilinear::MultilinearPoint;
-use whir_p3::poly::wavelet::inverse_wavelet_transform;
+use whir_p3::poly::wavelet::Radix2WaveletKernel;
 use whir_p3::whir::committer::Witness;
 use whir_p3::whir::committer::reader::ParsedCommitment;
 use whir_p3::whir::parameters::WhirConfig;
 use whir_p3::whir::prover::Prover;
-use whir_p3::whir::statement::{Statement, StatementVerifier, Weights};
+use whir_p3::whir::statement::Statement;
+use whir_p3::whir::statement::weights::Weights;
 use whir_p3::whir::verifier::Verifier;
 
 #[derive(Debug)]
@@ -59,13 +62,12 @@ impl<Val, Dft, Hash, Compression, const DIGEST_ELEMS: usize>
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(
-    serialize = "Val: Serialize, Challenge: Serialize, [u8; DIGEST_ELEMS]: Serialize",
-    deserialize = "Val: DeserializeOwned, Challenge: DeserializeOwned, [u8; DIGEST_ELEMS]: DeserializeOwned"
+    serialize = "Challenge: Serialize",
+    deserialize = "Challenge: DeserializeOwned"
 ))]
-pub struct WhirProof<Val, Challenge, const DIGEST_ELEMS: usize> {
+pub struct WhirProof<Challenge> {
     pub ood_answers: Vec<Challenge>,
     pub narg_string: Vec<u8>,
-    pub proof: whir_p3::whir::prover::proof::WhirProof<Val, Challenge, DIGEST_ELEMS>,
 }
 
 impl<Val, Dft, Hash, Compression, Challenge, Challenger, const DIGEST_ELEMS: usize>
@@ -94,7 +96,7 @@ where
         >,
     );
     type Evaluations<'a> = HorizontallyTruncated<Val, RowMajorMatrixView<'a, Val>>;
-    type Proof = Vec<WhirProof<Val, Challenge, DIGEST_ELEMS>>;
+    type Proof = Vec<WhirProof<Challenge>>;
     type Error = ProofError;
 
     fn commit(
@@ -106,12 +108,12 @@ where
 
         // This should generate the same codeword and commitment as in `whir_p3`.
         let (commitment, merkle_tree) = {
-            // TODO(whir-p3): Commit to evaluation form directly and fold by `eq([lo, hi], r)`.
             let coeffs = info_span!("evals to coeffs").in_scope(|| {
                 let size = 1 << (concat_mats.meta.log_b + self.whir.starting_log_inv_rate);
-                let mut coeffs = Vec::with_capacity(size);
-                coeffs.extend(&concat_mats.values);
-                inverse_wavelet_transform(&mut DenseMatrix::new_col(&mut coeffs));
+                let mut evals = Vec::with_capacity(size);
+                evals.extend(&concat_mats.values);
+                let mut coeffs =
+                    Radix2WaveletKernel::default().inverse_wavelet_transform_algebra(evals);
                 coeffs.resize(size, Val::ZERO);
                 coeffs
             });
@@ -159,25 +161,36 @@ where
         rounds
             .iter()
             .map(|((concat_mats, merkle_tree), queries_and_evals)| {
-                let config = WhirConfig::<Challenge, Val, Hash, Compression, Blake3PoW>::new(
+                let config = WhirConfig::<
+                    Challenge,
+                    Val,
+                    Hash,
+                    Compression,
+                    Blake3PoW,
+                    KeccakF,
+                    Keccak,
+                    u8,
+                    KECCAK_WIDTH_BYTES,
+                >::new(
                     MultivariateParameters::new(concat_mats.meta.log_b),
                     self.whir.clone(),
                 );
 
-                let polynomial = info_span!("evals to coeffs").in_scope(|| {
-                    let mut coeffs = concat_mats.values.clone();
-                    inverse_wavelet_transform(&mut DenseMatrix::new_col(&mut coeffs));
-                    CoefficientList::new(coeffs)
+                let pol_evals = EvaluationsList::new(concat_mats.values.clone());
+                let pol_coeffs = info_span!("evals to coeffs").in_scope(|| {
+                    CoefficientList::new(
+                        Radix2WaveletKernel::default()
+                            .inverse_wavelet_transform_algebra(pol_evals.evals().to_vec()),
+                    )
                 });
                 let (ood_points, ood_answers) = info_span!("compute ood answers").in_scope(|| {
                     repeat_with(|| {
                         let ood_point: Challenge = challenger.sample_algebra_element();
-                        let ood_answer = polynomial.evaluate_at_extension(
-                            &MultilinearPoint::expand_from_univariate(
+                        let ood_answer =
+                            pol_coeffs.evaluate(&MultilinearPoint::expand_from_univariate(
                                 ood_point,
                                 concat_mats.meta.log_b,
-                            ),
-                        );
+                            ));
                         (ood_point, ood_answer)
                     })
                     .take(config.committment_ood_samples)
@@ -205,25 +218,25 @@ where
                 });
 
                 let mut prover_state = {
-                    let mut domainsep = DomainSeparator::new("🌪️");
+                    let mut domainsep = DomainSeparator::new("🌪️", KeccakF);
                     domainsep.add_whir_proof(&config);
-                    domainsep.to_prover_state()
+                    domainsep.to_prover_state::<_, 32>()
                 };
-                let proof = info_span!("prove").in_scope(|| {
+                info_span!("prove").in_scope(|| {
                     let witness = Witness {
-                        polynomial,
+                        pol_coeffs,
+                        pol_evals,
                         prover_data: merkle_tree.take().unwrap(),
                         ood_points,
                         ood_answers: ood_answers.clone(),
                     };
-                    Prover(config)
+                    Prover(&config)
                         .prove(&self.dft, &mut prover_state, statement, witness)
                         .unwrap()
                 });
                 WhirProof {
                     ood_answers,
                     narg_string: prover_state.narg_string().to_vec(),
-                    proof,
                 }
             })
             .collect()
@@ -259,7 +272,17 @@ where
                     .collect(),
             );
 
-            let config = WhirConfig::<Challenge, Val, Hash, Compression, Blake3PoW>::new(
+            let config = WhirConfig::<
+                Challenge,
+                Val,
+                Hash,
+                Compression,
+                Blake3PoW,
+                KeccakF,
+                Keccak,
+                u8,
+                KECCAK_WIDTH_BYTES,
+            >::new(
                 MultivariateParameters::new(concat_mats_meta.log_b),
                 self.whir.clone(),
             );
@@ -281,23 +304,22 @@ where
             });
 
             let mut verifier_state = {
-                let mut domainsep = DomainSeparator::new("🌪️");
+                let mut domainsep = DomainSeparator::new("🌪️", KeccakF);
                 domainsep.add_whir_proof(&config);
-                domainsep.to_verifier_state(&proof.narg_string)
+                domainsep.to_verifier_state::<_, 32>(&proof.narg_string)
             };
             Verifier::new(&config).verify(
                 &mut verifier_state,
                 &ParsedCommitment {
+                    num_variables: concat_mats_meta.log_b,
                     root: commitment,
                     ood_points,
                     ood_answers: proof.ood_answers.clone(),
                 },
-                &StatementVerifier::from_statement(&statement),
-                &proof.proof,
-            )
-        })?;
-
-        Ok(())
+                &statement,
+            )?;
+            Ok(())
+        })
     }
 }
 

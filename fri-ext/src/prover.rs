@@ -202,7 +202,7 @@ where
         .map(|(i, commit)| {
             let index_row = index >> ((i + 1) * config.arity_bits);
 
-            let (opened_rows, opening_proof) = config.mmcs.open_batch(index_row, commit);
+            let (opened_rows, opening_proof) = config.mmcs.open_batch(index_row, commit).unpack();
 
             CommitPhaseProofStep {
                 opened_rows,

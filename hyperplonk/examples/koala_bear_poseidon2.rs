@@ -82,6 +82,7 @@ fn main() {
             merkle_compress: compress,
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: 1,
+            rs_domain_initial_reduction_factor: 3,
         };
         HyperPlonkConfig::<_, Challenge, _>::new(
             Pcs::new(dft, whir_params),

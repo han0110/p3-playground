@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 
 use itertools::{Itertools, izip};
 use p3_challenger::{CanObserve, FieldChallenger, GrindingChallenger};
-use p3_commit::{Mmcs, OpenedValues, Pcs};
+use p3_commit::{BatchOpeningRef, Mmcs, OpenedValues, Pcs};
 use p3_dft::TwoAdicSubgroupDft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
@@ -423,7 +423,8 @@ where
                     let log_max_height = log2_strict_usize(self.mmcs.get_max_height(data));
                     let bits_reduced = log_global_max_height - log_max_height;
                     let reduced_index = index >> bits_reduced;
-                    let (opened_values, opening_proof) = self.mmcs.open_batch(reduced_index, data);
+                    let (opened_values, opening_proof) =
+                        self.mmcs.open_batch(reduced_index, data).unpack();
                     BatchOpening {
                         opened_values,
                         opening_proof,
@@ -503,8 +504,10 @@ where
                         batch_commit,
                         &batch_dims,
                         reduced_index,
-                        &batch_opening.opened_values,
-                        &batch_opening.opening_proof,
+                        BatchOpeningRef::new(
+                            &batch_opening.opened_values,
+                            &batch_opening.opening_proof,
+                        ),
                     )
                 } else {
                     // Empty batch?
@@ -512,8 +515,10 @@ where
                         batch_commit,
                         &[],
                         0,
-                        &batch_opening.opened_values,
-                        &batch_opening.opening_proof,
+                        BatchOpeningRef::new(
+                            &batch_opening.opened_values,
+                            &batch_opening.opening_proof,
+                        ),
                     )
                 }
                 .map_err(FriError::InputError)?;
