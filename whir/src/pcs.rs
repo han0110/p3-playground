@@ -8,11 +8,10 @@ use core::mem::replace;
 use core::ops::Range;
 
 use itertools::{Itertools, chain, cloned, izip, rev};
-use p3_challenger::FieldChallenger;
+use p3_challenger::{FieldChallenger, HashChallenger};
 use p3_commit::Mmcs;
-use p3_dft::TwoAdicSubgroupDft;
 use p3_field::{ExtensionField, Field, PrimeField64, TwoAdicField, dot_product};
-use p3_keccak::KeccakF;
+use p3_keccak::Keccak256Hash;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_matrix::horizontally_truncated::HorizontallyTruncated;
 use p3_matrix::{Dimensions, Matrix};
@@ -24,15 +23,14 @@ use p3_util::{log2_ceil_usize, log2_strict_usize};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::info_span;
+use whir_p3::dft::EvalsDft;
 use whir_p3::fiat_shamir::domain_separator::DomainSeparator;
 use whir_p3::fiat_shamir::errors::ProofError;
-use whir_p3::fiat_shamir::keccak::{KECCAK_WIDTH_BYTES, Keccak};
 use whir_p3::fiat_shamir::pow::blake3::Blake3PoW;
 use whir_p3::parameters::{MultivariateParameters, ProtocolParameters};
-use whir_p3::poly::coeffs::CoefficientList;
 use whir_p3::poly::evals::EvaluationsList;
 use whir_p3::poly::multilinear::MultilinearPoint;
-use whir_p3::poly::wavelet::Radix2WaveletKernel;
+use whir_p3::utils::parallel_repeat;
 use whir_p3::whir::committer::Witness;
 use whir_p3::whir::committer::reader::ParsedCommitment;
 use whir_p3::whir::parameters::WhirConfig;
@@ -42,18 +40,18 @@ use whir_p3::whir::statement::weights::Weights;
 use whir_p3::whir::verifier::Verifier;
 
 #[derive(Debug)]
-pub struct WhirPcs<Val, Dft, Hash, Compression, const DIGEST_ELEMS: usize> {
-    dft: Dft,
+pub struct WhirPcs<Val, Hash, Compression, const DIGEST_ELEMS: usize> {
+    dft: EvalsDft<Val>,
     whir: ProtocolParameters<Hash, Compression>,
     _phantom: PhantomData<Val>,
 }
 
-impl<Val, Dft, Hash, Compression, const DIGEST_ELEMS: usize>
-    WhirPcs<Val, Dft, Hash, Compression, DIGEST_ELEMS>
+impl<Val: Default, Hash, Compression, const DIGEST_ELEMS: usize>
+    WhirPcs<Val, Hash, Compression, DIGEST_ELEMS>
 {
-    pub const fn new(dft: Dft, whir: ProtocolParameters<Hash, Compression>) -> Self {
+    pub fn new(whir: ProtocolParameters<Hash, Compression>) -> Self {
         Self {
-            dft,
+            dft: EvalsDft::default(),
             whir,
             _phantom: PhantomData,
         }
@@ -70,11 +68,10 @@ pub struct WhirProof<Challenge> {
     pub narg_string: Vec<u8>,
 }
 
-impl<Val, Dft, Hash, Compression, Challenge, Challenger, const DIGEST_ELEMS: usize>
-    MlPcs<Challenge, Challenger> for WhirPcs<Val, Dft, Hash, Compression, DIGEST_ELEMS>
+impl<Val, Hash, Compression, Challenge, Challenger, const DIGEST_ELEMS: usize>
+    MlPcs<Challenge, Challenger> for WhirPcs<Val, Hash, Compression, DIGEST_ELEMS>
 where
     Val: TwoAdicField + PrimeField64,
-    Dft: TwoAdicSubgroupDft<Val>,
     Hash: Sync + CryptographicHasher<Val, [u8; DIGEST_ELEMS]>,
     Compression: Sync + PseudoCompressionFunction<[u8; DIGEST_ELEMS], 2>,
     Challenge: TwoAdicField + ExtensionField<Val>,
@@ -108,19 +105,15 @@ where
 
         // This should generate the same codeword and commitment as in `whir_p3`.
         let (commitment, merkle_tree) = {
-            let coeffs = info_span!("evals to coeffs").in_scope(|| {
-                let size = 1 << (concat_mats.meta.log_b + self.whir.starting_log_inv_rate);
-                let mut evals = Vec::with_capacity(size);
-                evals.extend(&concat_mats.values);
-                let mut coeffs =
-                    Radix2WaveletKernel::default().inverse_wavelet_transform_algebra(evals);
-                coeffs.resize(size, Val::ZERO);
-                coeffs
+            let evals_repeated = info_span!("repeating evals").in_scope(|| {
+                parallel_repeat(&concat_mats.values, 1 << self.whir.starting_log_inv_rate)
             });
+
             let folded_codeword = info_span!("compute folded codeword").in_scope(|| {
                 let width = 1 << self.whir.folding_factor.at_round(0);
-                let folded_coeffs = RowMajorMatrix::new(coeffs, width);
-                self.dft.dft_batch(folded_coeffs).to_row_major_matrix()
+                self.dft
+                    .dft_batch_by_evals(RowMajorMatrix::new(evals_repeated, width))
+                    .to_row_major_matrix()
             });
             let mmcs = MerkleTreeMmcs::new(
                 self.whir.merkle_hash.clone(),
@@ -167,27 +160,19 @@ where
                     Hash,
                     Compression,
                     Blake3PoW,
-                    KeccakF,
-                    Keccak,
+                    HashChallenger<u8, Keccak256Hash, 32>,
                     u8,
-                    KECCAK_WIDTH_BYTES,
                 >::new(
                     MultivariateParameters::new(concat_mats.meta.log_b),
                     self.whir.clone(),
                 );
 
-                let pol_evals = EvaluationsList::new(concat_mats.values.clone());
-                let pol_coeffs = info_span!("evals to coeffs").in_scope(|| {
-                    CoefficientList::new(
-                        Radix2WaveletKernel::default()
-                            .inverse_wavelet_transform_algebra(pol_evals.evals().to_vec()),
-                    )
-                });
+                let polynomial = EvaluationsList::new(concat_mats.values.clone());
                 let (ood_points, ood_answers) = info_span!("compute ood answers").in_scope(|| {
                     repeat_with(|| {
                         let ood_point: Challenge = challenger.sample_algebra_element();
                         let ood_answer =
-                            pol_coeffs.evaluate(&MultilinearPoint::expand_from_univariate(
+                            polynomial.evaluate(&MultilinearPoint::expand_from_univariate(
                                 ood_point,
                                 concat_mats.meta.log_b,
                             ));
@@ -218,14 +203,13 @@ where
                 });
 
                 let mut prover_state = {
-                    let mut domainsep = DomainSeparator::new("🌪️", KeccakF);
-                    domainsep.add_whir_proof(&config);
-                    domainsep.to_prover_state::<_, 32>()
+                    let mut domainsep = DomainSeparator::new("🌪️");
+                    domainsep.add_whir_proof::<_, _, _, _, 32>(&config);
+                    domainsep.to_prover_state(HashChallenger::new(vec![], Keccak256Hash))
                 };
                 info_span!("prove").in_scope(|| {
                     let witness = Witness {
-                        pol_coeffs,
-                        pol_evals,
+                        polynomial,
                         prover_data: merkle_tree.take().unwrap(),
                         ood_points,
                         ood_answers: ood_answers.clone(),
@@ -278,10 +262,8 @@ where
                 Hash,
                 Compression,
                 Blake3PoW,
-                KeccakF,
-                Keccak,
+                HashChallenger<u8, Keccak256Hash, 32>,
                 u8,
-                KECCAK_WIDTH_BYTES,
             >::new(
                 MultivariateParameters::new(concat_mats_meta.log_b),
                 self.whir.clone(),
@@ -304,9 +286,12 @@ where
             });
 
             let mut verifier_state = {
-                let mut domainsep = DomainSeparator::new("🌪️", KeccakF);
-                domainsep.add_whir_proof(&config);
-                domainsep.to_verifier_state::<_, 32>(&proof.narg_string)
+                let mut domainsep = DomainSeparator::new("🌪️");
+                domainsep.add_whir_proof::<_, _, _, _, 32>(&config);
+                domainsep.to_verifier_state(
+                    &proof.narg_string,
+                    HashChallenger::new(vec![], Keccak256Hash),
+                )
             };
             Verifier::new(&config).verify(
                 &mut verifier_state,

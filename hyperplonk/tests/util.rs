@@ -1,7 +1,6 @@
 use itertools::Itertools;
 use p3_air::{Air, BaseAirWithPublicValues};
 use p3_challenger::{HashChallenger, SerializingChallenger32};
-use p3_dft::Radix2DitParallel;
 use p3_field::{ExtensionField, PrimeField32, TwoAdicField};
 use p3_hyperplonk::{
     HyperPlonkConfig, ProverConstraintFolderOnExtension, ProverConstraintFolderOnExtensionPacking,
@@ -16,8 +15,7 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirPcs};
 type ByteHash = Keccak256Hash;
 type FieldHash = SerializingHasher<ByteHash>;
 type MyCompress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
-type Dft<Val> = Radix2DitParallel<Val>;
-type Pcs<Val, Dft> = WhirPcs<Val, Dft, FieldHash, MyCompress, 32>;
+type Pcs<Val> = WhirPcs<Val, FieldHash, MyCompress, 32>;
 type Challenger<Val> = SerializingChallenger32<Val, HashChallenger<u8, Keccak256Hash, 32>>;
 
 #[allow(clippy::multiple_bound_locations)]
@@ -42,7 +40,6 @@ pub fn run<
         + for<'t> Air<VerifierConstraintFolder<'t, Val, Challenge>>,
 {
     let config = {
-        let dft = Dft::default();
         let security_level = 60;
         let pow_bits = 0;
         let byte_hash = ByteHash {};
@@ -58,9 +55,10 @@ pub fn run<
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: 1,
             rs_domain_initial_reduction_factor: 3,
+            univariate_skip: false,
         };
         HyperPlonkConfig::new(
-            Pcs::new(dft, whir_params),
+            Pcs::new(whir_params),
             Challenger::from_hasher(Vec::new(), Keccak256Hash {}),
         )
     };

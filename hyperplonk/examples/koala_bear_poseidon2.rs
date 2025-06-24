@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use p3_air::{Air, AirBuilder, BaseAir, BaseAirWithPublicValues};
 use p3_challenger::{HashChallenger, SerializingChallenger32};
-use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_hyperplonk::{HyperPlonkConfig, ProverInput, VerifierInput, keygen, prove, verify};
 use p3_keccak::Keccak256Hash;
@@ -26,8 +25,7 @@ type LinearLayers = GenericPoseidon2LinearLayersKoalaBear;
 type ByteHash = Keccak256Hash;
 type FieldHash = SerializingHasher<ByteHash>;
 type Compress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
-type Dft<Val> = Radix2DitParallel<Val>;
-type Pcs<Val, Dft> = WhirPcs<Val, Dft, FieldHash, Compress, 32>;
+type Pcs<Val> = WhirPcs<Val, FieldHash, Compress, 32>;
 type Challenger = SerializingChallenger32<Val, HashChallenger<u8, Keccak256Hash, 32>>;
 
 const WIDTH: usize = 16;
@@ -67,7 +65,6 @@ fn main() {
     let mut rng = StdRng::from_os_rng();
 
     let config = {
-        let dft = Dft::default();
         // FIXME: Set to 128 when higher degree extension field is available.
         let security_level = 100;
         let pow_bits = 20;
@@ -84,9 +81,10 @@ fn main() {
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: 1,
             rs_domain_initial_reduction_factor: 3,
+            univariate_skip: false,
         };
         HyperPlonkConfig::<_, Challenge, _>::new(
-            Pcs::new(dft, whir_params),
+            Pcs::new(whir_params),
             Challenger::from_hasher(Vec::new(), Keccak256Hash {}),
         )
     };

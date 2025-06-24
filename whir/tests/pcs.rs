@@ -2,7 +2,6 @@ use core::iter::repeat_with;
 
 use itertools::{Itertools, izip};
 use p3_challenger::{CanObserve, FieldChallenger};
-use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{ExtensionField, Field};
 use p3_koala_bear::KoalaBear;
@@ -217,16 +216,14 @@ mod koala_bear_whir_pcs {
     type ByteHash = Keccak256Hash;
     type FieldHash = SerializingHasher<ByteHash>;
     type Compress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
-    type Dft = Radix2DitParallel<Val>;
     type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
-    type MyPcs = WhirPcs<Val, Dft, FieldHash, Compress, 32>;
+    type MyPcs = WhirPcs<Val, FieldHash, Compress, 32>;
 
     fn get_pcs(
         log_blowup: usize,
         folding_factor: usize,
         first_round_folding_factor: usize,
     ) -> (MyPcs, Challenger) {
-        let dft = Dft::default();
         let security_level = 100;
         let pow_bits = 20;
         let byte_hash = ByteHash {};
@@ -245,9 +242,10 @@ mod koala_bear_whir_pcs {
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: log_blowup,
             rs_domain_initial_reduction_factor: 3,
+            univariate_skip: false,
         };
         (
-            MyPcs::new(dft, whir_params),
+            MyPcs::new(whir_params),
             Challenger::from_hasher(Vec::new(), byte_hash),
         )
     }

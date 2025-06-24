@@ -24,7 +24,7 @@ serde = "1.0.218"
 tracing = "0.1.41"
 tracing-forest = "0.1.6"
 tracing-subscriber = { version = "0.3.17", default-features = false, features = ["alloc"] }
-whir-p3 = { git = "http://github.com/tcoratger/whir-p3", rev = "a6057b0" }
+whir-p3 = { git = "http://github.com/tcoratger/whir-p3", rev = "bac8b49" }
 
 p3-air = { git = "https://github.com/Plonky3/Plonky3" }
 p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3" }
